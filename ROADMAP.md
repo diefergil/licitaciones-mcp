@@ -12,6 +12,7 @@ The project should stay useful as a standalone open source library while also be
 - Design every long-running workflow to be resumable, idempotent, and observable.
 - Treat Docker Compose + Postgres as the default self-hosted deployment path.
 - Keep MCP tools stable and typed so agent clients can compose them safely.
+- Keep communication workflows outside the core project; emit structured events that external systems can route, notify, or act on.
 
 ## Phase 1: Source Ingestion Foundation
 
@@ -47,10 +48,12 @@ Make search useful for recurring opportunity discovery.
 Turn saved searches into dependable daily operations.
 
 - Add a scheduler/worker mode with persisted run state, retries, run locks, and idempotent result storage.
-- Add alert sinks for webhook, email, local JSON, and future notification providers.
-- Add alert templates with compact tender summaries, scoring reasons, deadlines, source links, and document links.
+- Add webhook subscriptions for saved searches, job runs, source health, tender matches, and document-analysis events.
+- Allow subscriptions to include routing metadata so external agent runtimes or workflow services can dispatch each event to the right process.
+- Add compact webhook payloads with tender summaries, scoring reasons, deadlines, source links, document links, and idempotency keys.
 - Add health checks for source freshness, parser failures, empty-result anomalies, database connectivity, and queue lag.
 - Add operator-facing commands for job history, failed runs, retry now, disable/enable, and source backfill.
+- Keep email delivery, inbox handling, CRM-style follow-up, and relationship management out of scope for this repository.
 
 ## Phase 5: Document Intelligence
 
@@ -98,5 +101,5 @@ Make the project easier to adopt and contribute to.
 - `0.1.x`: stabilize structured MCP search, PLACSP period ingestion, TED parsing, quality flags, CI/security baseline, and Docker smoke tests.
 - `0.2.x`: add migrations, source fetch history, incremental ingestion, full-text search, richer PLACSP/TED fixtures, and job run diagnostics.
 - `0.3.x`: add document download/extraction, document search, requirement extraction, and citation-backed tender summaries.
-- `0.4.x`: add profile-based matching, alerts, monitoring commands, and webhook/email sinks.
+- `0.4.x`: add profile-based matching, alert events, monitoring commands, and webhook subscriptions.
 - `0.5.x`: add drafting helpers for economic memoranda, opportunity briefs, and compliance matrices.
