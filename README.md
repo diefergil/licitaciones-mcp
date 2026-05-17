@@ -90,6 +90,10 @@ v1 is Spain-first:
 
 Autonomous community-specific scrapers are out of scope for the first release unless they can be represented through PLACSP aggregation or TED.
 
+## Roadmap
+
+See [ROADMAP.md](ROADMAP.md) for the tentative development plan.
+
 ## License
 
 AGPL-3.0-only. If you modify and provide this server over a network, publish the corresponding source for those modifications.
