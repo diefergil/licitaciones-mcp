@@ -1,0 +1,16 @@
+{
+  "notices": [
+    {
+      "publication-number": "123456-2026",
+      "notice-title": "Supply of photovoltaic equipment",
+      "buyer-name": "European Energy Agency",
+      "notice-type": "open",
+      "publication-date": "2026-05-16",
+      "deadline": "2026-06-20",
+      "place-of-performance": "Madrid",
+      "classification-cpv": ["09332000"],
+      "estimated-value": "250000",
+      "links": [{"href": "https://ted.europa.eu/notice/123456-2026"}]
+    }
+  ]
+}

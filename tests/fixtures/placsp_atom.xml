@@ -1,0 +1,41 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<feed xmlns="http://www.w3.org/2005/Atom"
+      xmlns:cac="urn:dgpe:names:draft:codice:schema:xsd:CommonAggregateComponents-2"
+      xmlns:cbc="urn:dgpe:names:draft:codice:schema:xsd:CommonBasicComponents-2">
+  <title>PLACSP sample</title>
+  <entry>
+    <id>https://contrataciondelestado.es/sindicacion/licitacionesPerfilContratante/123</id>
+    <title>Servicio de mantenimiento de instalaciones solares en Valencia</title>
+    <summary>Contrato abierto para mantenimiento energético municipal.</summary>
+    <updated>2026-05-17T08:00:00Z</updated>
+    <published>2026-05-17T08:00:00Z</published>
+    <link href="https://contrataciondelestado.es/wps/poc?uri=deeplink:detalle_licitacion&amp;idEvl=abc" />
+    <cac:ContractFolderStatus>
+      <cbc:ContractFolderID>2026/123</cbc:ContractFolderID>
+      <cbc:ContractFolderStatusCode>Publicada</cbc:ContractFolderStatusCode>
+      <cac:LocatedContractingParty>
+        <cac:Party>
+          <cac:PartyIdentification>
+            <cbc:ID schemeName="NIF">P4625200J</cbc:ID>
+          </cac:PartyIdentification>
+          <cac:PartyName>
+            <cbc:Name>Ayuntamiento de Valencia</cbc:Name>
+          </cac:PartyName>
+        </cac:Party>
+      </cac:LocatedContractingParty>
+      <cac:ProcurementProject>
+        <cbc:Name>Mantenimiento solar</cbc:Name>
+        <cbc:EstimatedOverallContractAmount>125.000,50</cbc:EstimatedOverallContractAmount>
+        <cac:RequiredCommodityClassification>
+          <cbc:ItemClassificationCode>09332000</cbc:ItemClassificationCode>
+        </cac:RequiredCommodityClassification>
+        <cac:RealizedLocation>
+          <cbc:CountrySubentity>Comunitat Valenciana</cbc:CountrySubentity>
+        </cac:RealizedLocation>
+      </cac:ProcurementProject>
+      <cac:TenderingProcess>
+        <cbc:EndDate>2026-06-15</cbc:EndDate>
+      </cac:TenderingProcess>
+    </cac:ContractFolderStatus>
+  </entry>
+</feed>
