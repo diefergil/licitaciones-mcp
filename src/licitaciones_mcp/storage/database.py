@@ -284,6 +284,8 @@ class TenderDatabase:
         if not clean:
             return 0
         dim = len(clean[0][1])
+        if any(len(vector) != dim for _tender_id, vector in clean):
+            raise ValueError("All embeddings in one upsert must have the same dimensions")
         async with self.session_factory() as session:
             # Replace any existing embedding for these tenders to keep one
             # row per (tender, provider, model) tuple — keeps cosine search
@@ -308,6 +310,13 @@ class TenderDatabase:
             )
             await session.commit()
         return len(clean)
+
+    async def pgvector_available(self) -> bool:
+        """Return whether the connected database exposes the pgvector type."""
+
+        async with self.session_factory() as session:
+            value = (await session.execute(text("SELECT to_regtype('vector')"))).scalar_one()
+        return value is not None
 
     async def tender_ids_missing_embeddings(
         self, *, provider: str, model: str, limit: int = 500
@@ -437,6 +446,8 @@ class TenderDatabase:
         """
 
         if not query_embedding:
+            return []
+        if not await self.pgvector_available():
             return []
         literal = "[" + ",".join(f"{v:.8f}" for v in query_embedding) + "]"
         sql = (

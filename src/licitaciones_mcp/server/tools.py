@@ -89,13 +89,20 @@ class TenderToolService:
             embedding, provider, model = await self._embed_query(filters.text)
             if not embedding:
                 if query_mode == "semantic":
-                    return {
-                        "count": 0,
-                        "filters": filters.model_dump(mode="json"),
-                        "results": [],
-                        "error": "embeddings_disabled",
-                        "message": "No embedding provider configured.",
-                    }
+                    return _search_error_response(
+                        filters,
+                        error="embeddings_disabled",
+                        message="No embedding provider configured.",
+                    )
+                results = await self.database.search_tenders(filters)
+                return _search_response(filters, results)
+            if not await _database_pgvector_available(self.database):
+                if query_mode == "semantic":
+                    return _search_error_response(
+                        filters,
+                        error="pgvector_unavailable",
+                        message="pgvector extension is not available in this database.",
+                    )
                 results = await self.database.search_tenders(filters)
                 return _search_response(filters, results)
             if query_mode == "semantic":
@@ -149,6 +156,13 @@ class TenderToolService:
                 "results": [],
                 "error": "embeddings_disabled",
                 "message": "No embedding provider configured.",
+            }
+        if not await _database_pgvector_available(self.database):
+            return {
+                "count": 0,
+                "results": [],
+                "error": "pgvector_unavailable",
+                "message": "pgvector extension is not available in this database.",
             }
         pairs = await self.database.semantic_search_tenders(
             query_embedding=embedding,
@@ -484,6 +498,23 @@ def _search_response(
             for result in results
         ],
     }
+
+
+def _search_error_response(filters: TenderFilters, *, error: str, message: str) -> dict[str, Any]:
+    return {
+        "count": 0,
+        "filters": filters.model_dump(mode="json"),
+        "results": [],
+        "error": error,
+        "message": message,
+    }
+
+
+async def _database_pgvector_available(database: Any) -> bool:
+    checker = getattr(database, "pgvector_available", None)
+    if checker is None:
+        return True
+    return bool(await checker())
 
 
 def _parse_source(value: str) -> TenderSource:

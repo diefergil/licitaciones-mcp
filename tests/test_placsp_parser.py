@@ -2,6 +2,7 @@ from pathlib import Path
 
 from licitaciones_mcp.core.models import TenderSource, TenderStatus
 from licitaciones_mcp.sources.placsp import (
+    DEFAULT_USER_AGENT,
     PLACSPDatasetKind,
     build_placsp_period_url,
     parse_placsp_atom,
@@ -36,3 +37,8 @@ def test_build_placsp_annual_url_for_encargos() -> None:
     url = build_placsp_period_url(PLACSPDatasetKind.ENCARGOS, year=2026, month=None)
 
     assert url.endswith("/EMP_SectorPublico_2026.zip")
+
+
+def test_placsp_default_user_agent_uses_package_version() -> None:
+    assert DEFAULT_USER_AGENT.startswith("licitaciones-mcp/")
+    assert DEFAULT_USER_AGENT != "licitaciones-mcp/0.1"

@@ -33,6 +33,7 @@ from licitaciones_mcp import __version__
 
 __all__ = [
     "RateLimiter",
+    "default_user_agent",
     "make_async_client",
     "request_with_retries",
 ]
@@ -41,8 +42,8 @@ __all__ = [
 class RateLimiter:
     """Simple token-bucket rate limiter keyed per host.
 
-    The implementation favours fairness and bounded memory over raw
-    throughput: one bucket per netloc, refilled on demand.
+    One bucket is kept per netloc for the lifetime of the limiter and
+    refilled on demand.
     """
 
     def __init__(self, rate_per_sec: float, *, capacity: float | None = None) -> None:
@@ -76,6 +77,12 @@ _DEFAULT_USER_AGENT = (
     f"licitaciones-mcp/{__version__} (+https://github.com/diefergil/licitaciones-mcp)"
 )
 _RETRYABLE_STATUS = frozenset({408, 425, 429, 500, 502, 503, 504})
+
+
+def default_user_agent() -> str:
+    """Return the package default user agent for outbound source requests."""
+
+    return _DEFAULT_USER_AGENT
 
 
 class _RetryableStatus(httpx.HTTPStatusError):

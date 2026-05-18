@@ -28,14 +28,14 @@ from licitaciones_mcp.core.normalization import (
     parse_money,
 )
 from licitaciones_mcp.core.scoring import tender_matches_filters
-from licitaciones_mcp.http import make_async_client
+from licitaciones_mcp.http import default_user_agent, make_async_client
 from licitaciones_mcp.sources.base import TenderSourceClient
 
 ATOM_NS = {"atom": "http://www.w3.org/2005/Atom"}
 CAC_NS = "urn:dgpe:names:draft:codice:schema:xsd:CommonAggregateComponents-2"
 CBC_NS = "urn:dgpe:names:draft:codice:schema:xsd:CommonBasicComponents-2"
 PLACSP_BASE = "https://contrataciondelsectorpublico.gob.es"
-DEFAULT_USER_AGENT = "licitaciones-mcp/0.1"
+DEFAULT_USER_AGENT = default_user_agent()
 
 
 class PLACSPDatasetKind(StrEnum):

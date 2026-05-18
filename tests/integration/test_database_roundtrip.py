@@ -52,6 +52,17 @@ async def test_dedupe_key_prevents_duplicate_rows(database: TenderDatabase) -> N
     assert first_ids == second_ids
 
 
+async def test_upsert_embeddings_rejects_mixed_dimensions(database: TenderDatabase) -> None:
+    """One embedding batch must not mix vector dimensions."""
+
+    with pytest.raises(ValueError, match="same dimensions"):
+        await database.upsert_embeddings(
+            provider="test",
+            model="fake",
+            items=[("a", [1.0, 0.0]), ("b", [1.0, 0.0, 0.0])],
+        )
+
+
 async def test_source_fetch_run_history_roundtrip(database: TenderDatabase) -> None:
     """Source fetch attempts should be persisted with final counts and metadata."""
 

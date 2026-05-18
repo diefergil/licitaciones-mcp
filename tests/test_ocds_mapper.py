@@ -54,6 +54,7 @@ def test_tender_to_release_has_required_fields() -> None:
     tender_block = release["tender"]
     assert tender_block["id"] == "EXP-2026-001"
     assert tender_block["status"] == "active"
+    assert tender_block["mainProcurementCategory"] == "services"
     assert tender_block["value"] == {"amount": 120000.0, "currency": "EUR"}
     assert tender_block["tenderPeriod"]["endDate"].startswith("2026-02-05")
     assert {item["classification"]["id"] for item in tender_block["items"]} == {
@@ -79,6 +80,15 @@ def test_release_package_wraps_releases() -> None:
     assert package["publisher"]["name"] == "licitaciones-mcp"
     assert package["publisher"]["uri"] == DEFAULT_PUBLISHER_URI
     assert package["publicationPolicy"] == DEFAULT_PUBLICATION_POLICY_URL
+
+
+def test_unknown_contract_type_omits_main_procurement_category() -> None:
+    tender = _make_tender()
+    tender.contract_type = "contrato mixto"
+
+    release = tender_to_release(tender)
+
+    assert "mainProcurementCategory" not in release["tender"]
 
 
 def test_release_package_metadata_can_be_overridden() -> None:

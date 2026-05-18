@@ -11,6 +11,7 @@ from datetime import UTC, datetime
 from typing import Any
 
 from licitaciones_mcp.core.models import Tender, TenderStatus
+from licitaciones_mcp.core.normalization import fold_text
 
 # OCID prefix can be customised by deployers; falls back to a generic
 # OSS prefix when not configured.
@@ -73,6 +74,19 @@ def _value(tender: Tender) -> dict[str, Any] | None:
     return {"amount": tender.estimated_value, "currency": tender.currency or "EUR"}
 
 
+def _main_procurement_category(value: str | None) -> str | None:
+    folded = fold_text(value)
+    if not folded:
+        return None
+    if any(term in folded for term in ("servicio", "service")):
+        return "services"
+    if any(term in folded for term in ("suministro", "supply", "supplies", "goods")):
+        return "goods"
+    if any(term in folded for term in ("obra", "works", "construction")):
+        return "works"
+    return None
+
+
 def _documents(tender: Tender) -> list[dict[str, Any]]:
     documents: list[dict[str, Any]] = []
     for index, document in enumerate(tender.documents):
@@ -116,8 +130,9 @@ def tender_to_release(tender: Tender, *, ocid_prefix: str = DEFAULT_OCID_PREFIX)
         tender_block["description"] = tender.summary
     if tender.procedure_type:
         tender_block["procurementMethodDetails"] = tender.procedure_type
-    if tender.contract_type:
-        tender_block["mainProcurementCategory"] = tender.contract_type.lower()
+    main_category = _main_procurement_category(tender.contract_type)
+    if main_category:
+        tender_block["mainProcurementCategory"] = main_category
     value = _value(tender)
     if value:
         tender_block["value"] = value
