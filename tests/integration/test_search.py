@@ -91,3 +91,34 @@ async def test_hybrid_merges_keyword_and_vector(database: TenderDatabase) -> Non
         model="fake",
     )
     assert hybrid[0].tender.external_id == "h2"
+
+
+async def test_hybrid_applies_pagination_once_after_fusion(database: TenderDatabase) -> None:
+    tenders = [
+        await _tender("page-1", "Servicio fotovoltaico 1"),
+        await _tender("page-2", "Servicio fotovoltaico 2"),
+        await _tender("page-3", "Servicio fotovoltaico 3"),
+    ]
+    tenders[0].published_at = datetime(2025, 1, 3, tzinfo=UTC)
+    tenders[1].published_at = datetime(2025, 1, 2, tzinfo=UTC)
+    tenders[2].published_at = datetime(2025, 1, 1, tzinfo=UTC)
+    ids = await database.upsert_tenders(tenders)
+    await database.upsert_embeddings(
+        provider="test",
+        model="fake",
+        items=[
+            (ids[0], [1.0, 0.0]),
+            (ids[1], [0.8, 0.2]),
+            (ids[2], [0.0, 1.0]),
+        ],
+    )
+
+    results = await database.hybrid_search(
+        TenderFilters(limit=1, offset=1),
+        query_embedding=[1.0, 0.0],
+        provider="test",
+        model="fake",
+        top_k=3,
+    )
+
+    assert [result.tender.external_id for result in results] == ["page-2"]

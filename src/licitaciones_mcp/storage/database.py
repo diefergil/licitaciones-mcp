@@ -401,8 +401,9 @@ class TenderDatabase:
             record.extracted_text = text
             record.extracted_sections = sections
             record.parser_name = parser_name
-            record.parsed_at = datetime.now(UTC) if error is None else None
-            record.parse_error = error
+            sanitized_error = _sanitize_error(error)
+            record.parsed_at = datetime.now(UTC) if sanitized_error is None else None
+            record.parse_error = sanitized_error
             await session.commit()
 
     async def get_tender_document(self, document_id: str) -> dict[str, Any] | None:
@@ -526,12 +527,17 @@ class TenderDatabase:
         deterministic, explainable scoring stays in charge.
         """
 
-        keyword = await self.search_tenders(filters)
         if not query_embedding:
-            return keyword
+            return await self.search_tenders(filters)
+
+        fusion_window = max(top_k, filters.limit + filters.offset)
+        keyword_filters = filters.model_copy(
+            update={"offset": 0, "limit": max(1, min(fusion_window, _SEARCH_CANDIDATE_MAX))}
+        )
+        keyword = await self.search_tenders(keyword_filters)
         semantic = await self.semantic_search_tenders(
             query_embedding=query_embedding,
-            top_k=top_k,
+            top_k=fusion_window,
             filters=filters,
             provider=provider,
             model=model,

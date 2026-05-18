@@ -9,6 +9,7 @@ import pytest
 from licitaciones_mcp.core.models import (
     SourceFetchRunStatus,
     Tender,
+    TenderDocument,
     TenderFilters,
     TenderSource,
 )
@@ -143,3 +144,27 @@ async def test_source_fetch_run_rejects_invalid_status(database: TenderDatabase)
 
     with pytest.raises(ValueError, match="Invalid source fetch run status"):
         await database.finish_source_fetch_run(started.id, status="done")
+
+
+async def test_record_document_parse_sanitizes_errors(database: TenderDatabase) -> None:
+    """Document parse errors should be compact and single-line."""
+
+    tender = await _make_tender("doc-error", "Servicio con documento")
+    tender.documents = [TenderDocument(url="https://example.test/doc.pdf")]
+    await database.upsert_tenders([tender])
+    [document] = await database.list_pending_documents(limit=10)
+
+    await database.record_document_parse(
+        document_id=document["id"],
+        text=None,
+        sections=None,
+        parser_name=None,
+        error="parse\nfailed " + ("x" * 3000),
+    )
+
+    stored = await database.get_tender_document(document["id"])
+
+    assert stored is not None
+    assert stored["parse_error"] is not None
+    assert "\n" not in stored["parse_error"]
+    assert len(stored["parse_error"]) == 2000
