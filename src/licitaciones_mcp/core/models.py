@@ -8,6 +8,9 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field, HttpUrl
 
+MAX_TENDER_SEARCH_LIMIT = 500
+MAX_TENDER_SEARCH_OFFSET = 1_000
+
 
 class TenderSource(StrEnum):
     """Supported tender data sources."""
@@ -132,8 +135,8 @@ class TenderFilters(BaseModel):
     min_value: float | None = None
     max_value: float | None = None
     only_open: bool = False
-    limit: int = Field(default=20, ge=1, le=500)
-    offset: int = Field(default=0, ge=0)
+    limit: int = Field(default=20, ge=1, le=MAX_TENDER_SEARCH_LIMIT)
+    offset: int = Field(default=0, ge=0, le=MAX_TENDER_SEARCH_OFFSET)
     order_by: Literal["score", "published_at", "deadline_at", "estimated_value"] = "score"
     order: Literal["asc", "desc"] = "desc"
     query_mode: Literal["keyword", "semantic", "hybrid"] = "keyword"

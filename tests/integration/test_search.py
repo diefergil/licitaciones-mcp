@@ -5,11 +5,9 @@ from __future__ import annotations
 from datetime import UTC, datetime
 
 import pytest
-from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 from licitaciones_mcp.core.models import Tender, TenderFilters, TenderSource
 from licitaciones_mcp.storage.database import TenderDatabase
-from licitaciones_mcp.storage.models import TenderEmbeddingRecord
 
 pytestmark = pytest.mark.integration
 
@@ -59,35 +57,24 @@ async def test_hybrid_merges_keyword_and_vector(database: TenderDatabase) -> Non
     ids = await database.upsert_tenders(tenders)
 
     # Inject deterministic embeddings: tender h2 is the closest to the query.
-    async with database.session_factory() as session:
-        await session.execute(
-            pg_insert(TenderEmbeddingRecord).values(
-                [
-                    {
-                        "tender_id": ids[0],
-                        "provider": "test",
-                        "model": "fake",
-                        "dimensions": 3,
-                        "embedding": [1.0, 0.0, 0.0],
-                    },
-                    {
-                        "tender_id": ids[1],
-                        "provider": "test",
-                        "model": "fake",
-                        "dimensions": 3,
-                        "embedding": [0.0, 1.0, 0.0],
-                    },
-                    {
-                        "tender_id": ids[0],
-                        "provider": "other",
-                        "model": "fake",
-                        "dimensions": 3,
-                        "embedding": [0.0, 1.0, 0.0],
-                    },
-                ]
-            )
-        )
-        await session.commit()
+    await database.upsert_embeddings(
+        provider="test",
+        model="fake",
+        items=[
+            (ids[0], [1.0, 0.0, 0.0]),
+            (ids[1], [0.0, 1.0, 0.0]),
+        ],
+    )
+    await database.upsert_embeddings(
+        provider="other",
+        model="fake",
+        items=[(ids[0], [0.0, 1.0, 0.0])],
+    )
+    await database.upsert_embeddings(
+        provider="small",
+        model="fake",
+        items=[(ids[0], [1.0, 0.0])],
+    )
 
     semantic = await database.semantic_search_tenders(
         query_embedding=[0.0, 1.0, 0.0],

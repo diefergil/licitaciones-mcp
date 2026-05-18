@@ -20,6 +20,7 @@ from sqlalchemy.orm import selectinload
 from licitaciones_mcp.config import Settings
 from licitaciones_mcp.core.dedupe import attach_dedupe_key
 from licitaciones_mcp.core.models import (
+    MAX_TENDER_SEARCH_LIMIT,
     DailyJob,
     JobRun,
     JobRunStatus,
@@ -49,6 +50,9 @@ from licitaciones_mcp.storage.models import (
     new_id,
 )
 
+_SEARCH_CANDIDATE_MIN = 200
+_SEARCH_CANDIDATE_MULTIPLIER = 20
+_SEARCH_CANDIDATE_MAX = 5_000
 _SEARCH_VECTOR_EXPR = (
     "to_tsvector('spanish', "
     "coalesce(title, '') || ' ' || "
@@ -148,7 +152,7 @@ class TenderDatabase:
         """Persist the final outcome for a source fetch attempt."""
 
         finished_at = datetime.now(UTC)
-        status_value = status.value if isinstance(status, SourceFetchRunStatus) else str(status)
+        status_value = _source_fetch_run_status_value(status)
         async with self.session_factory() as session:
             record = await session.get(SourceFetchRunRecord, run_id)
             if record is None:
@@ -185,9 +189,7 @@ class TenderDatabase:
                 source_value = source.value if isinstance(source, TenderSource) else str(source)
                 statement = statement.where(SourceFetchRunRecord.source == source_value)
             if status is not None:
-                status_value = (
-                    status.value if isinstance(status, SourceFetchRunStatus) else str(status)
-                )
+                status_value = _source_fetch_run_status_value(status)
                 statement = statement.where(SourceFetchRunRecord.status == status_value)
             statement = statement.limit(max(1, min(limit, 200)))
             records = (await session.execute(statement)).scalars().all()
@@ -308,15 +310,33 @@ class TenderDatabase:
                     for tid, vec in clean
                 ]
             )
+            await session.flush()
+            if await _embedding_vector_available(session):
+                await session.execute(
+                    text(
+                        "UPDATE tender_embeddings "
+                        "SET embedding_vector = (embedding::text)::vector "
+                        "WHERE provider = :__provider "
+                        "AND model = :__model "
+                        "AND tender_id = ANY(:__tender_ids)"
+                    ).bindparams(
+                        bindparam(
+                            "__tender_ids",
+                            value=[tender_id for tender_id, _vector in clean],
+                            type_=ARRAY(String()),
+                        ),
+                        __provider=provider,
+                        __model=model,
+                    )
+                )
             await session.commit()
         return len(clean)
 
     async def pgvector_available(self) -> bool:
-        """Return whether the connected database exposes the pgvector type."""
+        """Return whether native pgvector-backed embedding search is available."""
 
         async with self.session_factory() as session:
-            value = (await session.execute(text("SELECT to_regtype('vector')"))).scalar_one()
-        return value is not None
+            return await _embedding_vector_available(session)
 
     async def tender_ids_missing_embeddings(
         self, *, provider: str, model: str, limit: int = 500
@@ -425,7 +445,7 @@ class TenderDatabase:
                 )
             else:
                 statement = statement.order_by(TenderRecord.published_at.desc().nullslast())
-            statement = statement.limit(max((filters.limit + filters.offset) * 20, 200))
+            statement = statement.limit(_search_candidate_limit(filters))
             records = (await session.execute(statement)).scalars().all()
         return rank_tenders([_record_to_tender(record) for record in records], filters)
 
@@ -440,9 +460,10 @@ class TenderDatabase:
     ) -> list[tuple[Tender, float]]:
         """Return tenders ranked by cosine distance to ``query_embedding``.
 
-        The embedding column is stored as JSON for portability; we cast it
-        to ``vector`` at query time so the pgvector ``<=>`` operator can do
-        the heavy lifting.
+        Embeddings are stored as JSON for portability and mirrored into a
+        native pgvector column when the extension is available. Semantic
+        search uses that native shadow column so distance queries avoid
+        per-row JSON casts.
         """
 
         if not query_embedding:
@@ -451,10 +472,11 @@ class TenderDatabase:
             return []
         literal = "[" + ",".join(f"{v:.8f}" for v in query_embedding) + "]"
         sql = (
-            "SELECT t.id, (e.embedding::text)::vector <=> (:__emb)::vector AS distance "
+            "SELECT t.id, e.embedding_vector <=> (:__emb)::vector AS distance "
             "FROM tenders t "
             "JOIN tender_embeddings e ON e.tender_id = t.id "
-            "WHERE e.dimensions = :__dim "
+            "WHERE e.embedding_vector IS NOT NULL "
+            "AND e.dimensions = :__dim "
             "AND (:__provider IS NULL OR e.provider = :__provider) "
             "AND (:__model IS NULL OR e.model = :__model) "
             "ORDER BY distance ASC "
@@ -465,7 +487,7 @@ class TenderDatabase:
                 await session.execute(
                     text(sql).bindparams(
                         __emb=literal,
-                        __k=top_k,
+                        __k=max(1, min(top_k, _SEARCH_CANDIDATE_MAX)),
                         __dim=len(query_embedding),
                         __provider=provider,
                         __model=model,
@@ -846,17 +868,11 @@ class TenderDatabase:
     ) -> None:
         """Persist an optional embedding vector as JSON metadata."""
 
-        async with self.session_factory() as session:
-            session.add(
-                TenderEmbeddingRecord(
-                    tender_id=tender_id,
-                    provider=provider,
-                    model=model,
-                    dimensions=len(embedding),
-                    embedding=embedding,
-                )
-            )
-            await session.commit()
+        await self.upsert_embeddings(
+            provider=provider,
+            model=model,
+            items=[(tender_id, embedding)],
+        )
 
     async def _upsert_tender(self, session: AsyncSession, tender: Tender) -> str:
         if not tender.quality_issues:
@@ -935,6 +951,42 @@ async def _ensure_postgres_search_features(conn: AsyncConnection) -> None:
         text(
             "CREATE INDEX IF NOT EXISTS idx_tenders_buyer_trgm "
             "ON tenders USING GIN (buyer_name gin_trgm_ops)"
+        )
+    )
+    await _ensure_embedding_vector_features(conn)
+
+
+async def _ensure_embedding_vector_features(conn: AsyncConnection) -> None:
+    """Create optional native vector storage when pgvector is installed."""
+
+    await conn.execute(
+        text(
+            """
+            DO $$
+            BEGIN
+                IF to_regtype('vector') IS NOT NULL THEN
+                    EXECUTE 'ALTER TABLE tender_embeddings
+                        ADD COLUMN IF NOT EXISTS embedding_vector vector';
+                    EXECUTE 'UPDATE tender_embeddings
+                        SET embedding_vector = (embedding::text)::vector
+                        WHERE embedding IS NOT NULL AND embedding_vector IS NULL';
+                    EXECUTE 'CREATE INDEX IF NOT EXISTS idx_tender_embeddings_lookup
+                        ON tender_embeddings (provider, model, dimensions)';
+                    BEGIN
+                        EXECUTE 'CREATE INDEX IF NOT EXISTS
+                            idx_tender_embeddings_embedding_vector_hnsw
+                            ON tender_embeddings
+                            USING hnsw (embedding_vector vector_cosine_ops)
+                            WHERE embedding_vector IS NOT NULL';
+                    EXCEPTION
+                        WHEN undefined_object OR feature_not_supported
+                            OR invalid_parameter_value OR data_exception THEN
+                            RAISE NOTICE 'pgvector HNSW index unavailable for embeddings';
+                    END;
+                END IF;
+            END
+            $$;
+            """
         )
     )
 
@@ -1058,6 +1110,46 @@ def _sanitize_error(error: str | None) -> str | None:
     if not error:
         return None
     return " ".join(str(error).split())[:2000]
+
+
+def _source_fetch_run_status_value(status: SourceFetchRunStatus | str) -> str:
+    """Normalize a source fetch run status before it reaches storage."""
+
+    if isinstance(status, SourceFetchRunStatus):
+        return status.value
+    try:
+        return SourceFetchRunStatus(str(status).lower()).value
+    except ValueError as exc:
+        raise ValueError(f"Invalid source fetch run status: {status}") from exc
+
+
+def _search_candidate_limit(filters: TenderFilters) -> int:
+    """Return a bounded candidate window for SQL before Python reranking."""
+
+    window = max(
+        (min(filters.limit, MAX_TENDER_SEARCH_LIMIT) + filters.offset)
+        * _SEARCH_CANDIDATE_MULTIPLIER,
+        _SEARCH_CANDIDATE_MIN,
+    )
+    return min(window, _SEARCH_CANDIDATE_MAX)
+
+
+async def _embedding_vector_available(session: AsyncSession) -> bool:
+    """Return whether the native vector shadow column can serve semantic search."""
+
+    sql = text(
+        """
+        SELECT to_regtype('vector') IS NOT NULL
+        AND EXISTS (
+            SELECT 1
+            FROM information_schema.columns
+            WHERE table_schema = current_schema()
+            AND table_name = 'tender_embeddings'
+            AND column_name = 'embedding_vector'
+        )
+        """
+    )
+    return bool((await session.execute(sql)).scalar_one())
 
 
 def _job_record_to_model(record: DailyJobRecord) -> DailyJob:

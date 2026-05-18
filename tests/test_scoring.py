@@ -1,6 +1,15 @@
 from datetime import UTC, datetime
 
-from licitaciones_mcp.core.models import Tender, TenderFilters, TenderSource, TenderStatus
+import pytest
+from pydantic import ValidationError
+
+from licitaciones_mcp.core.models import (
+    MAX_TENDER_SEARCH_OFFSET,
+    Tender,
+    TenderFilters,
+    TenderSource,
+    TenderStatus,
+)
 from licitaciones_mcp.core.scoring import rank_tenders, tender_matches_filters
 
 
@@ -63,3 +72,8 @@ def test_structured_source_and_buyer_filters() -> None:
         )
         is False
     )
+
+
+def test_tender_filters_reject_unbounded_offsets() -> None:
+    with pytest.raises(ValidationError):
+        TenderFilters(offset=MAX_TENDER_SEARCH_OFFSET + 1)

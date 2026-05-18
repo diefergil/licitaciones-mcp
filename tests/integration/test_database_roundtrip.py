@@ -117,3 +117,15 @@ async def test_source_fetch_run_records_failure(database: TenderDatabase) -> Non
 
     assert failed.status == SourceFetchRunStatus.FAILED
     assert failed.error == "network error"
+
+
+async def test_source_fetch_run_rejects_invalid_status(database: TenderDatabase) -> None:
+    """Invalid source fetch statuses should fail before they reach storage."""
+
+    started = await database.start_source_fetch_run(
+        source=TenderSource.PLACSP,
+        operation="period",
+    )
+
+    with pytest.raises(ValueError, match="Invalid source fetch run status"):
+        await database.finish_source_fetch_run(started.id, status="done")

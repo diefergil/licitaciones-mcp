@@ -5,7 +5,13 @@ from __future__ import annotations
 import pytest
 
 from licitaciones_mcp.config import Settings
-from licitaciones_mcp.core.models import Tender, TenderSearchResult, TenderSource
+from licitaciones_mcp.core.models import (
+    MAX_TENDER_SEARCH_OFFSET,
+    Tender,
+    TenderFilters,
+    TenderSearchResult,
+    TenderSource,
+)
 from licitaciones_mcp.embeddings.base import Embedder
 from licitaciones_mcp.server.tools import TenderToolService
 
@@ -14,9 +20,11 @@ class _FakeDatabase:
     def __init__(self, *, pgvector_available: bool = True) -> None:
         self.keyword_calls = 0
         self._pgvector_available = pgvector_available
+        self.last_filters: TenderFilters | None = None
 
-    async def search_tenders(self, _filters: object) -> list[TenderSearchResult]:
+    async def search_tenders(self, filters: TenderFilters) -> list[TenderSearchResult]:
         self.keyword_calls += 1
+        self.last_filters = filters
         return [
             TenderSearchResult(
                 tender=Tender(
@@ -103,3 +111,14 @@ async def test_hybrid_mode_falls_back_to_keyword_when_pgvector_unavailable(
     assert result["count"] == 1
     assert result["results"][0]["tender"]["external_id"] == "1"
     assert database.keyword_calls == 1
+
+
+@pytest.mark.asyncio
+async def test_search_clamps_large_offsets_before_hitting_database() -> None:
+    database = _FakeDatabase()
+    service = TenderToolService(Settings(), database)  # type: ignore[arg-type]
+
+    await service.search_tenders(text="solar", offset=999_999)
+
+    assert database.last_filters is not None
+    assert database.last_filters.offset == MAX_TENDER_SEARCH_OFFSET

@@ -6,6 +6,8 @@ from typing import Any, Literal
 
 from licitaciones_mcp.config import Settings
 from licitaciones_mcp.core.models import (
+    MAX_TENDER_SEARCH_LIMIT,
+    MAX_TENDER_SEARCH_OFFSET,
     DailyJob,
     PublicTender,
     TenderFilters,
@@ -462,8 +464,8 @@ class TenderToolService:
             deadline_to=parse_date(deadline_to),
             min_value=min_value,
             max_value=max_value,
-            limit=max(1, min(limit, 500)),
-            offset=max(0, offset),
+            limit=max(1, min(limit, MAX_TENDER_SEARCH_LIMIT)),
+            offset=max(0, min(offset, MAX_TENDER_SEARCH_OFFSET)),
             order_by=order_by,
             order=order,
             query_mode=query_mode,
