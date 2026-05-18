@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from typing import Any, Literal
 
+from pydantic import ValidationError
+
 from licitaciones_mcp.config import Settings
 from licitaciones_mcp.core.models import (
     MAX_TENDER_SEARCH_LIMIT,
@@ -63,31 +65,34 @@ class TenderToolService:
     ) -> dict[str, Any]:
         """Search tenders from local storage, optionally refreshing sources first."""
 
-        filters = self._build_filters(
-            text=text,
-            cpv_codes=cpv_codes,
-            nuts_codes=nuts_codes,
-            regions=regions,
-            buyer=buyer,
-            statuses=statuses,
-            sources=sources,
-            procedure_types=procedure_types,
-            contract_types=contract_types,
-            notice_types=notice_types,
-            only_open=only_open,
-            published_from=published_from,
-            published_to=published_to,
-            deadline_from=deadline_from,
-            deadline_to=deadline_to,
-            min_value=min_value,
-            max_value=max_value,
-            country=country,
-            limit=limit,
-            offset=offset,
-            order_by=order_by,
-            order=order,
-            query_mode=query_mode,
-        )
+        try:
+            filters = self._build_filters(
+                text=text,
+                cpv_codes=cpv_codes,
+                nuts_codes=nuts_codes,
+                regions=regions,
+                buyer=buyer,
+                statuses=statuses,
+                sources=sources,
+                procedure_types=procedure_types,
+                contract_types=contract_types,
+                notice_types=notice_types,
+                only_open=only_open,
+                published_from=published_from,
+                published_to=published_to,
+                deadline_from=deadline_from,
+                deadline_to=deadline_to,
+                min_value=min_value,
+                max_value=max_value,
+                country=country,
+                limit=limit,
+                offset=offset,
+                order_by=order_by,
+                order=order,
+                query_mode=query_mode,
+            )
+        except (ValidationError, ValueError) as exc:
+            return _invalid_filters_response(exc, collection="results")
         if refresh_sources:
             await self.ingestor.ingest_for_filters(filters)
         if query_mode in ("semantic", "hybrid") and filters.text:
@@ -325,16 +330,19 @@ class TenderToolService:
     ) -> dict[str, Any]:
         """Create or replace a daily tender search job."""
 
-        filters = self._build_filters(
-            text=text,
-            cpv_codes=cpv_codes,
-            regions=regions,
-            buyer=buyer,
-            statuses=statuses,
-            sources=sources,
-            only_open=only_open,
-            limit=limit,
-        )
+        try:
+            filters = self._build_filters(
+                text=text,
+                cpv_codes=cpv_codes,
+                regions=regions,
+                buyer=buyer,
+                statuses=statuses,
+                sources=sources,
+                only_open=only_open,
+                limit=limit,
+            )
+        except (ValidationError, ValueError) as exc:
+            return _invalid_filters_response(exc)
         job = await self.database.create_daily_job(
             DailyJob(name=name, filters=filters, hour_utc=hour_utc, cron=cron)
         )
@@ -434,13 +442,16 @@ class TenderToolService:
 
         from licitaciones_mcp.ocds import build_release_package, tender_to_release
 
-        filters = self._build_filters(
-            text=text,
-            cpv_codes=cpv_codes,
-            regions=regions,
-            only_open=only_open,
-            limit=limit,
-        )
+        try:
+            filters = self._build_filters(
+                text=text,
+                cpv_codes=cpv_codes,
+                regions=regions,
+                only_open=only_open,
+                limit=limit,
+            )
+        except (ValidationError, ValueError) as exc:
+            return _invalid_filters_response(exc)
         results = await self.database.search_tenders(filters)
         releases = [tender_to_release(item.tender) for item in results]
         return build_release_package(releases)
@@ -537,6 +548,36 @@ def _search_error_response(filters: TenderFilters, *, error: str, message: str) 
         "error": error,
         "message": message,
     }
+
+
+def _invalid_filters_response(
+    exc: ValidationError | ValueError,
+    *,
+    collection: str | None = None,
+) -> dict[str, Any]:
+    response: dict[str, Any] = {
+        "error": "invalid_filters",
+        "message": "Invalid tender filters.",
+        "details": _validation_error_details(exc),
+    }
+    if collection is not None:
+        response["count"] = 0
+        response[collection] = []
+    return response
+
+
+def _validation_error_details(exc: ValidationError | ValueError) -> list[dict[str, Any]]:
+    if not isinstance(exc, ValidationError):
+        return [{"type": exc.__class__.__name__, "message": str(exc)}]
+
+    details: list[dict[str, Any]] = []
+    for item in exc.errors(include_context=False, include_input=False, include_url=False):
+        detail = dict(item)
+        loc = item.get("loc")
+        if loc is not None:
+            detail["loc"] = list(loc)
+        details.append(detail)
+    return details
 
 
 async def _database_pgvector_available(database: Any) -> bool:

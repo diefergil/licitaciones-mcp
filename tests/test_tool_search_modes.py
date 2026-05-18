@@ -128,6 +128,37 @@ async def test_search_clamps_large_offsets_before_hitting_database() -> None:
 
 
 @pytest.mark.asyncio
+async def test_search_returns_structured_error_for_invalid_filters() -> None:
+    database = _FakeDatabase()
+    service = TenderToolService(Settings(), database)  # type: ignore[arg-type]
+
+    result = await service.search_tenders(text="solar", country="Atlantis")
+
+    assert result["error"] == "invalid_filters"
+    assert result["message"] == "Invalid tender filters."
+    assert result["count"] == 0
+    assert result["results"] == []
+    assert result["details"][0]["loc"] == ["country"]
+    assert database.keyword_calls == 0
+
+
+@pytest.mark.asyncio
+async def test_search_returns_structured_error_for_invalid_query_mode() -> None:
+    database = _FakeDatabase()
+    service = TenderToolService(Settings(), database)  # type: ignore[arg-type]
+
+    result = await service.search_tenders(
+        text="solar",
+        query_mode="vector",  # type: ignore[arg-type]
+    )
+
+    assert result["error"] == "invalid_filters"
+    assert result["count"] == 0
+    assert result["details"][0]["loc"] == ["query_mode"]
+    assert database.keyword_calls == 0
+
+
+@pytest.mark.asyncio
 async def test_list_source_runs_returns_structured_error_for_invalid_status() -> None:
     database = _FakeDatabase()
     service = TenderToolService(Settings(), database)  # type: ignore[arg-type]
