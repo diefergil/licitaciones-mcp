@@ -55,6 +55,7 @@ class TenderDocument(BaseModel):
 class Tender(BaseModel):
     """Normalized public tender record used across sources and MCP tools."""
 
+    id: str | None = None
     source: TenderSource
     external_id: str
     title: str
@@ -135,6 +136,8 @@ class TenderFilters(BaseModel):
     offset: int = Field(default=0, ge=0)
     order_by: Literal["score", "published_at", "deadline_at", "estimated_value"] = "score"
     order: Literal["asc", "desc"] = "desc"
+    query_mode: Literal["keyword", "semantic", "hybrid"] = "keyword"
+    country: str | None = None
 
 
 class TenderSearchResult(BaseModel):
@@ -160,6 +163,7 @@ class DailyJob(BaseModel):
     name: str
     filters: TenderFilters
     hour_utc: int = Field(default=7, ge=0, le=23)
+    cron: str | None = None
     enabled: bool = True
     created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
 
@@ -192,6 +196,38 @@ class SourceFetchResult(BaseModel):
     fetched_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
     source_cursor: str | None = None
     metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class SourceFetchRunStatus(StrEnum):
+    """Persisted source fetch run status."""
+
+    RUNNING = "running"
+    SUCCEEDED = "succeeded"
+    FAILED = "failed"
+
+
+class SourceFetchRun(BaseModel):
+    """Audit record for one source fetch and ingestion attempt."""
+
+    id: str
+    source: TenderSource
+    operation: str
+    status: SourceFetchRunStatus
+    dataset_kind: str | None = None
+    year: int | None = None
+    month: int | None = None
+    source_url: str | None = None
+    source_cursor: str | None = None
+    filters: dict[str, Any] = Field(default_factory=dict)
+    started_at: datetime
+    finished_at: datetime | None = None
+    duration_ms: int | None = None
+    tenders_fetched: int = 0
+    tenders_upserted: int = 0
+    tenders_skipped: int = 0
+    error: str | None = None
+    request_metadata: dict[str, Any] = Field(default_factory=dict)
+    result_metadata: dict[str, Any] = Field(default_factory=dict)
 
 
 class MCPErrorResponse(BaseModel):

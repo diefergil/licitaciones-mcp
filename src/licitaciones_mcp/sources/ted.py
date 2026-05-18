@@ -2,10 +2,8 @@
 
 from __future__ import annotations
 
-import asyncio
+from pathlib import Path
 from typing import Any
-
-import httpx
 
 from licitaciones_mcp.core.dedupe import attach_dedupe_key
 from licitaciones_mcp.core.models import (
@@ -24,6 +22,7 @@ from licitaciones_mcp.core.normalization import (
     parse_money,
 )
 from licitaciones_mcp.core.scoring import tender_matches_filters
+from licitaciones_mcp.http import make_async_client
 from licitaciones_mcp.sources.base import TenderSourceClient
 
 TED_FIELDS = [
@@ -58,13 +57,17 @@ class TEDClient(TenderSourceClient):
         base_url: str = "https://api.ted.europa.eu/v3",
         *,
         timeout: float = 30.0,
-        page_delay_seconds: float = 1.0,
+        rate_per_sec: float = 1.0,
+        max_attempts: int = 5,
+        cache_dir: Path | None = None,
     ) -> None:
         """Create a TED client."""
 
         self.base_url = base_url.rstrip("/")
         self.timeout = timeout
-        self.page_delay_seconds = page_delay_seconds
+        self.rate_per_sec = rate_per_sec
+        self.max_attempts = max_attempts
+        self.cache_dir = cache_dir
 
     async def fetch(self, filters: TenderFilters) -> SourceFetchResult:
         """Search TED notices using the public API."""
@@ -72,7 +75,13 @@ class TEDClient(TenderSourceClient):
         tenders: list[Tender] = []
         page = 1
         page_limit = max(1, min(filters.limit, 100))
-        async with httpx.AsyncClient(timeout=self.timeout) as client:
+        async with make_async_client(
+            name="ted",
+            rate_per_sec=self.rate_per_sec,
+            timeout=self.timeout,
+            cache_dir=self.cache_dir,
+            max_attempts=self.max_attempts,
+        ) as client:
             while len(tenders) < filters.limit:
                 payload = build_ted_search_payload(filters, page=page, limit=page_limit)
                 response = await client.post(f"{self.base_url}/notices/search", json=payload)
@@ -82,7 +91,6 @@ class TEDClient(TenderSourceClient):
                 if len(page_tenders) < page_limit:
                     break
                 page += 1
-                await asyncio.sleep(self.page_delay_seconds)
         return SourceFetchResult(
             source=TenderSource.TED,
             tenders=[tender for tender in tenders if tender_matches_filters(tender, filters)][
@@ -110,8 +118,11 @@ def build_ted_search_payload(
     if filters.notice_types:
         notices = ",".join(filters.notice_types)
         query_parts.append(f"notice-type IN ({notices})")
+    country = (filters.country or "ESP").upper()
+    if not any("buyer-country" in part for part in query_parts):
+        query_parts.append(f"buyer-country={country}")
     return {
-        "query": " AND ".join(query_parts) if query_parts else "buyer-country=ESP",
+        "query": " AND ".join(query_parts),
         "fields": TED_FIELDS,
         "scope": "ALL",
         "page": max(1, page),

@@ -15,6 +15,8 @@ The project is designed as a self-hosted application. Each workspace can run its
   - `get_recent_tenders`
   - `search_buyers`
   - `search_cpv_codes`
+  - `list_source_runs`
+  - `get_source_run`
   - `ingest_source_period`
   - `create_daily_job`
   - `list_jobs`
@@ -29,7 +31,7 @@ The project is designed as a self-hosted application. Each workspace can run its
 ```bash
 cp .env.example .env
 uv sync --extra dev
-uv run licitaciones-mcp init-db
+uv run licitaciones-mcp migrate-db
 uv run licitaciones-mcp serve-mcp
 ```
 
@@ -79,6 +81,37 @@ OPENAI_API_KEY=...
 ```
 
 If no provider is configured, searches still work through structured filters, CPV, region, dates, status, and keyword scoring.
+
+When a provider is configured, `search_tenders` accepts `query_mode` (`keyword` | `semantic` | `hybrid`), and the dedicated `semantic_search_tenders` tool returns nearest-neighbour matches via pgvector.
+
+## OCDS Export
+
+Tenders can be exported as [OCDS 1.1](https://standard.open-contracting.org/1.1/en/) releases:
+
+- MCP tools: `export_tender_ocds`, `export_search_ocds`.
+- CLI: `licitaciones-mcp ocds export --output release-package.json --text "servicios"`.
+
+## Document Intelligence
+
+PLACSP/TED documents (PDF first) can be downloaded and parsed:
+
+- Background CLI: `licitaciones-mcp documents process --batch-size 25`.
+- MCP tool: `get_tender_document(document_id)` returns extracted text, sections, and parser metadata.
+
+## Scheduler
+
+An APScheduler-based worker runs daily/cron jobs in-process:
+
+- `licitaciones-mcp scheduler run` (also available as a `scheduler` service in `docker-compose.yml`).
+- Job definitions live in the `daily_jobs` table and can be managed via the `create_daily_job` / `run_job_now` MCP tools. Heartbeats are written to `scheduler_heartbeats`.
+
+## Source Run History
+
+Every source refresh records a lightweight audit row with source, operation, status, period/cursor, counts, duration, metadata, and sanitized errors. Inspect it with `licitaciones-mcp list-source-runs`, `licitaciones-mcp get-source-run <id>`, or the `list_source_runs` / `get_source_run` MCP tools.
+
+## Health
+
+When serving over HTTP (`streamable-http` or `sse`), the server exposes `GET /healthz` returning `{"status": "ok", "version": "..."}`.
 
 ## Source Scope
 

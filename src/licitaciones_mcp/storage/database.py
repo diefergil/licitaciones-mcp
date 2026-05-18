@@ -5,7 +5,8 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from typing import Any
 
-from sqlalchemy import delete, select
+from sqlalchemy import String, bindparam, delete, or_, select, text
+from sqlalchemy.dialects.postgresql import ARRAY
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import (
     AsyncEngine,
@@ -15,11 +16,14 @@ from sqlalchemy.ext.asyncio import (
 )
 from sqlalchemy.orm import selectinload
 
+from licitaciones_mcp.config import Settings
 from licitaciones_mcp.core.dedupe import attach_dedupe_key
 from licitaciones_mcp.core.models import (
     DailyJob,
     JobRun,
     JobRunStatus,
+    SourceFetchRun,
+    SourceFetchRunStatus,
     Tender,
     TenderDocument,
     TenderFilters,
@@ -34,8 +38,10 @@ from licitaciones_mcp.core.scoring import rank_tenders
 from licitaciones_mcp.storage.models import (
     Base,
     DailyJobRecord,
+    IngestCursorRecord,
     JobResultRecord,
     JobRunRecord,
+    SourceFetchRunRecord,
     TenderDocumentRecord,
     TenderEmbeddingRecord,
     TenderRecord,
@@ -49,11 +55,29 @@ class TenderDatabase:
     def __init__(self, database_url: str, *, echo: bool = False) -> None:
         """Create a database wrapper."""
 
+        self.database_url = database_url
         self.engine: AsyncEngine = create_async_engine(database_url, echo=echo)
         self.session_factory = async_sessionmaker(self.engine, expire_on_commit=False)
 
-    async def init_schema(self) -> None:
-        """Create database tables when they do not exist."""
+    async def init_schema(self, *, use_migrations: bool = True) -> None:
+        """Create or migrate the database schema.
+
+        When ``use_migrations`` is true (default) the schema is brought up to
+        the latest Alembic revision. The ``create_all`` shortcut is kept for
+        ephemeral test databases that prefer to skip the migration machinery.
+        """
+
+        if use_migrations:
+            # Alembic runs synchronously on its own engine; we offload it so
+            # callers can keep awaiting from an event loop.
+            import asyncio
+
+            from licitaciones_mcp.storage import migrations
+
+            await asyncio.to_thread(
+                migrations.upgrade, "head", settings=Settings(DATABASE_URL=self.database_url)
+            )
+            return
 
         async with self.engine.begin() as conn:
             await conn.run_sync(Base.metadata.create_all)
@@ -62,6 +86,167 @@ class TenderDatabase:
         """Dispose database connections."""
 
         await self.engine.dispose()
+
+    async def start_source_fetch_run(
+        self,
+        *,
+        source: TenderSource | str,
+        operation: str,
+        dataset_kind: str | None = None,
+        year: int | None = None,
+        month: int | None = None,
+        source_url: str | None = None,
+        source_cursor: str | None = None,
+        filters: dict[str, Any] | None = None,
+        request_metadata: dict[str, Any] | None = None,
+    ) -> SourceFetchRun:
+        """Persist the start of one source fetch attempt."""
+
+        run_id = new_id()
+        started_at = datetime.now(UTC)
+        source_value = source.value if isinstance(source, TenderSource) else str(source)
+        record = SourceFetchRunRecord(
+            id=run_id,
+            source=source_value,
+            operation=operation,
+            status=SourceFetchRunStatus.RUNNING.value,
+            dataset_kind=dataset_kind,
+            year=year,
+            month=month,
+            source_url=source_url,
+            source_cursor=source_cursor,
+            filters=filters or {},
+            started_at=started_at,
+            request_metadata=request_metadata or {},
+        )
+        async with self.session_factory() as session:
+            session.add(record)
+            await session.commit()
+        return _source_fetch_run_record_to_model(record)
+
+    async def finish_source_fetch_run(
+        self,
+        run_id: str,
+        *,
+        status: SourceFetchRunStatus | str,
+        tenders_fetched: int = 0,
+        tenders_upserted: int = 0,
+        tenders_skipped: int = 0,
+        error: str | None = None,
+        source_cursor: str | None = None,
+        result_metadata: dict[str, Any] | None = None,
+    ) -> SourceFetchRun:
+        """Persist the final outcome for a source fetch attempt."""
+
+        finished_at = datetime.now(UTC)
+        status_value = status.value if isinstance(status, SourceFetchRunStatus) else str(status)
+        async with self.session_factory() as session:
+            record = await session.get(SourceFetchRunRecord, run_id)
+            if record is None:
+                raise ValueError(f"Source fetch run not found: {run_id}")
+            started_at = record.started_at
+            if started_at.tzinfo is None:
+                started_at = started_at.replace(tzinfo=UTC)
+            record.status = status_value
+            record.finished_at = finished_at
+            record.duration_ms = max(0, int((finished_at - started_at).total_seconds() * 1000))
+            record.tenders_fetched = tenders_fetched
+            record.tenders_upserted = tenders_upserted
+            record.tenders_skipped = tenders_skipped
+            record.error = _sanitize_error(error)
+            record.source_cursor = source_cursor or record.source_cursor
+            record.result_metadata = result_metadata or {}
+            await session.commit()
+            return _source_fetch_run_record_to_model(record)
+
+    async def list_source_fetch_runs(
+        self,
+        *,
+        source: TenderSource | str | None = None,
+        status: SourceFetchRunStatus | str | None = None,
+        limit: int = 20,
+    ) -> list[SourceFetchRun]:
+        """List recent source fetch attempts."""
+
+        async with self.session_factory() as session:
+            statement = select(SourceFetchRunRecord).order_by(
+                SourceFetchRunRecord.started_at.desc()
+            )
+            if source is not None:
+                source_value = source.value if isinstance(source, TenderSource) else str(source)
+                statement = statement.where(SourceFetchRunRecord.source == source_value)
+            if status is not None:
+                status_value = (
+                    status.value if isinstance(status, SourceFetchRunStatus) else str(status)
+                )
+                statement = statement.where(SourceFetchRunRecord.status == status_value)
+            statement = statement.limit(max(1, min(limit, 200)))
+            records = (await session.execute(statement)).scalars().all()
+        return [_source_fetch_run_record_to_model(record) for record in records]
+
+    async def get_source_fetch_run(self, run_id: str) -> SourceFetchRun | None:
+        """Return one source fetch run by ID."""
+
+        async with self.session_factory() as session:
+            record = await session.get(SourceFetchRunRecord, run_id)
+        return _source_fetch_run_record_to_model(record) if record else None
+
+    async def get_ingest_cursor(
+        self, *, source: str, kind: str, cursor: str
+    ) -> dict[str, Any] | None:
+        """Return cursor metadata or ``None`` if it doesn't exist yet."""
+
+        async with self.session_factory() as session:
+            stmt = (
+                select(IngestCursorRecord)
+                .where(IngestCursorRecord.source == source)
+                .where(IngestCursorRecord.kind == kind)
+                .where(IngestCursorRecord.cursor == cursor)
+            )
+            record = (await session.execute(stmt)).scalars().first()
+        if record is None:
+            return None
+        return {
+            "status": record.status,
+            "attempts": record.attempts,
+            "result_count": record.result_count,
+            "last_error": record.last_error,
+        }
+
+    async def record_ingest_cursor(
+        self,
+        *,
+        source: str,
+        kind: str,
+        cursor: str,
+        status: str,
+        result_count: int = 0,
+        last_error: str | None = None,
+    ) -> None:
+        """Insert or update a cursor, bumping its attempt counter."""
+
+        async with self.session_factory() as session:
+            insert_stmt = pg_insert(IngestCursorRecord).values(
+                source=source,
+                kind=kind,
+                cursor=cursor,
+                status=status,
+                attempts=1,
+                result_count=result_count,
+                last_error=last_error,
+            )
+            upsert = insert_stmt.on_conflict_do_update(
+                constraint="uq_ingest_cursors_triple",
+                set_={
+                    "status": status,
+                    "result_count": result_count,
+                    "last_error": last_error,
+                    "attempts": IngestCursorRecord.attempts + 1,
+                    "updated_at": datetime.now(UTC),
+                },
+            )
+            await session.execute(upsert)
+            await session.commit()
 
     async def upsert_tenders(self, tenders: list[Tender]) -> list[str]:
         """Insert or update tenders and return database IDs."""
@@ -73,6 +258,63 @@ class TenderDatabase:
                 ids.append(record_id)
             await session.commit()
         return ids
+
+    async def upsert_embeddings(
+        self,
+        *,
+        provider: str,
+        model: str,
+        items: list[tuple[str, list[float]]],
+    ) -> int:
+        """Replace embeddings for the provided ``(tender_id, vector)`` pairs.
+
+        Returns the number of rows written. Empty vectors are skipped.
+        """
+
+        clean = [(tid, vec) for tid, vec in items if vec]
+        if not clean:
+            return 0
+        dim = len(clean[0][1])
+        async with self.session_factory() as session:
+            # Replace any existing embedding for these tenders to keep one
+            # row per (tender, provider, model) tuple — keeps cosine search
+            # results deterministic across re-ingests.
+            await session.execute(
+                delete(TenderEmbeddingRecord)
+                .where(TenderEmbeddingRecord.tender_id.in_([tid for tid, _ in clean]))
+                .where(TenderEmbeddingRecord.provider == provider)
+                .where(TenderEmbeddingRecord.model == model)
+            )
+            session.add_all(
+                [
+                    TenderEmbeddingRecord(
+                        tender_id=tid,
+                        provider=provider,
+                        model=model,
+                        dimensions=dim,
+                        embedding=vec,
+                    )
+                    for tid, vec in clean
+                ]
+            )
+            await session.commit()
+        return len(clean)
+
+    async def tender_ids_missing_embeddings(
+        self, *, provider: str, model: str, limit: int = 500
+    ) -> list[str]:
+        """Return tender IDs that don't yet have an embedding for ``(provider, model)``."""
+
+        sql = text(
+            "SELECT t.id FROM tenders t "
+            "LEFT JOIN tender_embeddings e "
+            "  ON e.tender_id = t.id AND e.provider = :__p AND e.model = :__m "
+            "WHERE e.id IS NULL "
+            "ORDER BY t.updated_at DESC LIMIT :__k"
+        ).bindparams(__p=provider, __m=model, __k=limit)
+        async with self.session_factory() as session:
+            rows = (await session.execute(sql)).all()
+        return [row[0] for row in rows]
 
     async def get_tender(self, tender_id: str) -> Tender | None:
         """Load a tender by DB ID, source-prefixed ID, dedupe key, or external ID."""
@@ -86,40 +328,261 @@ class TenderDatabase:
             record = (await session.execute(statement)).scalars().first()
             return _record_to_tender(record) if record else None
 
-    async def search_tenders(self, filters: TenderFilters) -> list[TenderSearchResult]:
-        """Search persisted tenders using deterministic ranking."""
+    async def list_pending_documents(self, *, limit: int = 100) -> list[dict[str, Any]]:
+        """Return documents that have not been parsed yet."""
 
         async with self.session_factory() as session:
             statement = (
-                select(TenderRecord)
-                .options(selectinload(TenderRecord.documents))
-                .order_by(TenderRecord.published_at.desc().nullslast())
+                select(TenderDocumentRecord)
+                .where(TenderDocumentRecord.parsed_at.is_(None))
+                .where(TenderDocumentRecord.parse_error.is_(None))
+                .order_by(TenderDocumentRecord.id.asc())
+                .limit(max(1, min(limit, 1000)))
             )
-            if filters.sources:
-                statement = statement.where(
-                    TenderRecord.source.in_([source.value for source in filters.sources])
+            records = (await session.execute(statement)).scalars().all()
+        return [
+            {"id": record.id, "tender_id": record.tender_id, "url": record.url}
+            for record in records
+        ]
+
+    async def record_document_parse(
+        self,
+        *,
+        document_id: str,
+        text: str | None,
+        sections: list[dict[str, Any]] | None,
+        parser_name: str | None,
+        error: str | None,
+    ) -> None:
+        """Persist the outcome of parsing a document."""
+
+        async with self.session_factory() as session:
+            record = await session.get(TenderDocumentRecord, document_id)
+            if record is None:
+                return
+            record.extracted_text = text
+            record.extracted_sections = sections
+            record.parser_name = parser_name
+            record.parsed_at = datetime.now(UTC) if error is None else None
+            record.parse_error = error
+            await session.commit()
+
+    async def get_tender_document(self, document_id: str) -> dict[str, Any] | None:
+        """Return persisted parsed-document fields by document ID."""
+
+        async with self.session_factory() as session:
+            record = await session.get(TenderDocumentRecord, document_id)
+            if record is None:
+                return None
+            return {
+                "id": record.id,
+                "tender_id": record.tender_id,
+                "url": record.url,
+                "title": record.title,
+                "document_type": record.document_type,
+                "parser_name": record.parser_name,
+                "parsed_at": record.parsed_at.isoformat() if record.parsed_at else None,
+                "parse_error": record.parse_error,
+                "extracted_text": record.extracted_text,
+                "extracted_sections": record.extracted_sections,
+            }
+
+    async def search_tenders(self, filters: TenderFilters) -> list[TenderSearchResult]:
+        """Search persisted tenders using Postgres FTS + Python reranker."""
+
+        async with self.session_factory() as session:
+            statement = self._apply_structured_filters(
+                select(TenderRecord).options(selectinload(TenderRecord.documents)),
+                filters,
+            )
+            statement = self._apply_text_filter(statement, filters.text)
+            if filters.text:
+                # Order by FTS rank when text is provided; trigram match keeps
+                # rows visible even when the tsquery doesn't hit.
+                statement = statement.order_by(
+                    text(
+                        "ts_rank(search_vector, websearch_to_tsquery('spanish', :__q)) DESC"
+                    ).bindparams(__q=filters.text),
+                    TenderRecord.published_at.desc().nullslast(),
                 )
-            if filters.statuses:
-                statement = statement.where(
-                    TenderRecord.status.in_([status.value for status in filters.statuses])
-                )
-            if filters.only_open:
-                statement = statement.where(TenderRecord.status == TenderStatus.OPEN.value)
-            if filters.published_from:
-                statement = statement.where(TenderRecord.published_at >= filters.published_from)
-            if filters.published_to:
-                statement = statement.where(TenderRecord.published_at <= filters.published_to)
-            if filters.deadline_from:
-                statement = statement.where(TenderRecord.deadline_at >= filters.deadline_from)
-            if filters.deadline_to:
-                statement = statement.where(TenderRecord.deadline_at <= filters.deadline_to)
-            if filters.min_value is not None:
-                statement = statement.where(TenderRecord.estimated_value >= filters.min_value)
-            if filters.max_value is not None:
-                statement = statement.where(TenderRecord.estimated_value <= filters.max_value)
+            else:
+                statement = statement.order_by(TenderRecord.published_at.desc().nullslast())
             statement = statement.limit(max((filters.limit + filters.offset) * 20, 200))
             records = (await session.execute(statement)).scalars().all()
         return rank_tenders([_record_to_tender(record) for record in records], filters)
+
+    async def semantic_search_tenders(
+        self,
+        *,
+        query_embedding: list[float],
+        top_k: int = 50,
+        filters: TenderFilters | None = None,
+    ) -> list[tuple[Tender, float]]:
+        """Return tenders ranked by cosine distance to ``query_embedding``.
+
+        The embedding column is stored as JSON for portability; we cast it
+        to ``vector`` at query time so the pgvector ``<=>`` operator can do
+        the heavy lifting.
+        """
+
+        if not query_embedding:
+            return []
+        literal = "[" + ",".join(f"{v:.8f}" for v in query_embedding) + "]"
+        sql = (
+            "SELECT t.id, (e.embedding::text)::vector <=> (:__emb)::vector AS distance "
+            "FROM tenders t "
+            "JOIN tender_embeddings e ON e.tender_id = t.id "
+            "ORDER BY distance ASC "
+            "LIMIT :__k"
+        )
+        async with self.session_factory() as session:
+            rows = (await session.execute(text(sql).bindparams(__emb=literal, __k=top_k))).all()
+            if not rows:
+                return []
+            ids = [row[0] for row in rows]
+            distances = {row[0]: float(row[1]) for row in rows}
+            statement = (
+                select(TenderRecord)
+                .options(selectinload(TenderRecord.documents))
+                .where(TenderRecord.id.in_(ids))
+            )
+            if filters is not None:
+                statement = self._apply_structured_filters(statement, filters)
+            records = (await session.execute(statement)).scalars().all()
+        ordered = sorted(records, key=lambda r: distances.get(r.id, 1.0))
+        return [(_record_to_tender(r), distances[r.id]) for r in ordered]
+
+    async def hybrid_search(
+        self,
+        filters: TenderFilters,
+        *,
+        query_embedding: list[float] | None,
+        rrf_k: int = 60,
+        top_k: int = 100,
+    ) -> list[TenderSearchResult]:
+        """Combine FTS and vector ranks using Reciprocal Rank Fusion.
+
+        Falls back to keyword-only search when no embedding is supplied.
+        The final ranking step still runs :func:`rank_tenders` so the
+        deterministic, explainable scoring stays in charge.
+        """
+
+        keyword = await self.search_tenders(filters)
+        if not query_embedding:
+            return keyword
+        semantic = await self.semantic_search_tenders(
+            query_embedding=query_embedding, top_k=top_k, filters=filters
+        )
+        rrf: dict[str, float] = {}
+        tenders: dict[str, Tender] = {}
+        for rank, result in enumerate(keyword, start=1):
+            key = result.tender.id or result.tender.dedupe_key or result.tender.external_id
+            rrf[key] = rrf.get(key, 0.0) + 1.0 / (rrf_k + rank)
+            tenders[key] = result.tender
+        for rank, (tender, _distance) in enumerate(semantic, start=1):
+            key = tender.id or tender.dedupe_key or tender.external_id
+            rrf[key] = rrf.get(key, 0.0) + 1.0 / (rrf_k + rank)
+            tenders.setdefault(key, tender)
+        fused = sorted(
+            tenders.values(), key=lambda t: rrf[t.id or t.dedupe_key or t.external_id], reverse=True
+        )
+        return rank_tenders(fused, filters)
+
+    @staticmethod
+    def _apply_structured_filters(statement, filters: TenderFilters):  # type: ignore[no-untyped-def]
+        """Apply non-text filters to a select statement."""
+
+        if filters.sources:
+            statement = statement.where(
+                TenderRecord.source.in_([source.value for source in filters.sources])
+            )
+        if filters.statuses:
+            statement = statement.where(
+                TenderRecord.status.in_([status.value for status in filters.statuses])
+            )
+        if filters.only_open:
+            statement = statement.where(TenderRecord.status == TenderStatus.OPEN.value)
+        if filters.published_from:
+            statement = statement.where(TenderRecord.published_at >= filters.published_from)
+        if filters.published_to:
+            statement = statement.where(TenderRecord.published_at <= filters.published_to)
+        if filters.deadline_from:
+            statement = statement.where(TenderRecord.deadline_at >= filters.deadline_from)
+        if filters.deadline_to:
+            statement = statement.where(TenderRecord.deadline_at <= filters.deadline_to)
+        if filters.min_value is not None:
+            statement = statement.where(TenderRecord.estimated_value >= filters.min_value)
+        if filters.max_value is not None:
+            statement = statement.where(TenderRecord.estimated_value <= filters.max_value)
+        if filters.buyer:
+            statement = statement.where(TenderRecord.buyer_name.ilike(f"%{filters.buyer}%"))
+        if filters.cpv_codes:
+            statement = statement.where(
+                text("cpv_codes::jsonb ?| :__cpv_codes").bindparams(
+                    bindparam(
+                        "__cpv_codes",
+                        value=normalize_cpv_codes(filters.cpv_codes),
+                        type_=ARRAY(String()),
+                    )
+                )
+            )
+        if filters.nuts_codes:
+            statement = statement.where(
+                text("nuts_codes::jsonb ?| :__nuts_codes").bindparams(
+                    bindparam("__nuts_codes", value=filters.nuts_codes, type_=ARRAY(String()))
+                )
+            )
+        if filters.regions:
+            statement = statement.where(
+                or_(*[TenderRecord.region.ilike(f"%{region}%") for region in filters.regions])
+            )
+        if filters.procedure_types:
+            statement = statement.where(
+                or_(
+                    *[
+                        TenderRecord.procedure_type.ilike(f"%{procedure_type}%")
+                        for procedure_type in filters.procedure_types
+                    ]
+                )
+            )
+        if filters.contract_types:
+            statement = statement.where(
+                or_(
+                    *[
+                        TenderRecord.contract_type.ilike(f"%{contract_type}%")
+                        for contract_type in filters.contract_types
+                    ]
+                )
+            )
+        if filters.notice_types:
+            statement = statement.where(
+                or_(
+                    *[
+                        TenderRecord.notice_type.ilike(f"%{notice_type}%")
+                        for notice_type in filters.notice_types
+                    ]
+                )
+            )
+        return statement
+
+    @staticmethod
+    def _apply_text_filter(statement, query: str | None):  # type: ignore[no-untyped-def]
+        """Constrain the result set to tenders matching ``query`` via FTS or trigram."""
+
+        if not query:
+            return statement
+        fts = text("search_vector @@ websearch_to_tsquery('spanish', :__q)").bindparams(__q=query)
+        trgm = text("(title % :__q OR coalesce(buyer_name,'') % :__q)").bindparams(__q=query)
+        lexical = f"%{query}%"
+        return statement.where(
+            or_(
+                fts,
+                trgm,
+                TenderRecord.title.ilike(lexical),
+                TenderRecord.summary.ilike(lexical),
+                TenderRecord.buyer_name.ilike(lexical),
+            )
+        )
 
     async def get_recent_tenders(
         self, *, limit: int = 20, source: TenderSource | None = None
@@ -191,6 +654,7 @@ class TenderDatabase:
             "name": job.name,
             "filters": job.filters.model_dump(mode="json"),
             "hour_utc": job.hour_utc,
+            "cron": job.cron,
             "enabled": job.enabled,
         }
         async with self.session_factory() as session:
@@ -200,6 +664,7 @@ class TenderDatabase:
                 set_={
                     "filters": payload["filters"],
                     "hour_utc": payload["hour_utc"],
+                    "cron": payload["cron"],
                     "enabled": payload["enabled"],
                 },
             ).returning(DailyJobRecord)
@@ -439,6 +904,7 @@ def _document_to_record(document: TenderDocument) -> TenderDocumentRecord:
 
 def _record_to_tender(record: TenderRecord) -> Tender:
     return Tender(
+        id=record.id,
         source=TenderSource(record.source),
         external_id=record.external_id,
         title=record.title,
@@ -481,12 +947,43 @@ def _record_to_tender(record: TenderRecord) -> Tender:
     )
 
 
+def _source_fetch_run_record_to_model(record: SourceFetchRunRecord) -> SourceFetchRun:
+    return SourceFetchRun(
+        id=record.id,
+        source=TenderSource(record.source),
+        operation=record.operation,
+        status=SourceFetchRunStatus(record.status),
+        dataset_kind=record.dataset_kind,
+        year=record.year,
+        month=record.month,
+        source_url=record.source_url,
+        source_cursor=record.source_cursor,
+        filters=dict(record.filters or {}),
+        started_at=record.started_at,
+        finished_at=record.finished_at,
+        duration_ms=record.duration_ms,
+        tenders_fetched=record.tenders_fetched,
+        tenders_upserted=record.tenders_upserted,
+        tenders_skipped=record.tenders_skipped,
+        error=record.error,
+        request_metadata=dict(record.request_metadata or {}),
+        result_metadata=dict(record.result_metadata or {}),
+    )
+
+
+def _sanitize_error(error: str | None) -> str | None:
+    if not error:
+        return None
+    return " ".join(str(error).split())[:2000]
+
+
 def _job_record_to_model(record: DailyJobRecord) -> DailyJob:
     return DailyJob(
         id=record.id,
         name=record.name,
         filters=TenderFilters.model_validate(record.filters),
         hour_utc=record.hour_utc,
+        cron=record.cron,
         enabled=record.enabled,
         created_at=record.created_at,
     )

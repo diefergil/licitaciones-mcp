@@ -1,0 +1,18 @@
+{
+  "mcpServers": {
+    "licitaciones-mcp": {
+      "command": "uvx",
+      "args": [
+        "--from",
+        "licitaciones-mcp",
+        "licitaciones-mcp",
+        "serve-mcp",
+        "--transport",
+        "stdio"
+      ],
+      "env": {
+        "DATABASE_URL": "CHANGE_ME_DATABASE_URL"
+      }
+    }
+  }
+}

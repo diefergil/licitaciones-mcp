@@ -1,0 +1,108 @@
+"""End-to-end smoke tests against a real Postgres+pgvector container."""
+
+from __future__ import annotations
+
+from datetime import UTC, datetime
+
+import pytest
+
+from licitaciones_mcp.core.models import (
+    SourceFetchRunStatus,
+    Tender,
+    TenderFilters,
+    TenderSource,
+)
+from licitaciones_mcp.storage.database import TenderDatabase
+
+pytestmark = pytest.mark.integration
+
+
+async def _make_tender(external_id: str, title: str) -> Tender:
+    return Tender(
+        source=TenderSource.PLACSP,
+        external_id=external_id,
+        title=title,
+        cpv_codes=["09332000"],
+        published_at=datetime(2025, 1, 1, tzinfo=UTC),
+        deadline_at=datetime(2025, 2, 1, tzinfo=UTC),
+        buyer_name="Ayuntamiento de Madrid",
+    )
+
+
+async def test_upsert_then_search_roundtrip(database: TenderDatabase) -> None:
+    """Inserted tenders should be retrievable through the search API."""
+
+    tender = await _make_tender("ext-1", "Solar mantenimiento")
+    ids = await database.upsert_tenders([tender])
+    assert len(ids) == 1
+
+    results = await database.search_tenders(
+        TenderFilters(text="solar", cpv_codes=["09332000"], limit=10)
+    )
+    assert len(results) == 1
+    assert results[0].tender.external_id == "ext-1"
+
+
+async def test_dedupe_key_prevents_duplicate_rows(database: TenderDatabase) -> None:
+    """Re-upserting the same logical tender should not create a duplicate."""
+
+    tender = await _make_tender("ext-2", "Servicio limpieza")
+    first_ids = await database.upsert_tenders([tender])
+    second_ids = await database.upsert_tenders([tender])
+    assert first_ids == second_ids
+
+
+async def test_source_fetch_run_history_roundtrip(database: TenderDatabase) -> None:
+    """Source fetch attempts should be persisted with final counts and metadata."""
+
+    started = await database.start_source_fetch_run(
+        source=TenderSource.PLACSP,
+        operation="period",
+        dataset_kind="licitaciones",
+        year=2026,
+        month=5,
+        source_url="https://example.test/source.zip",
+        filters={"cpv_codes": ["09332000"]},
+    )
+
+    finished = await database.finish_source_fetch_run(
+        started.id,
+        status=SourceFetchRunStatus.SUCCEEDED,
+        tenders_fetched=3,
+        tenders_upserted=2,
+        tenders_skipped=1,
+        source_cursor="licitaciones:2026:5",
+        result_metadata={"zip_bytes": 123},
+    )
+
+    assert finished.status == SourceFetchRunStatus.SUCCEEDED
+    assert finished.duration_ms is not None
+    assert finished.tenders_fetched == 3
+    assert finished.tenders_upserted == 2
+
+    listed = await database.list_source_fetch_runs(source=TenderSource.PLACSP)
+    assert [run.id for run in listed] == [started.id]
+
+    loaded = await database.get_source_fetch_run(started.id)
+    assert loaded is not None
+    assert loaded.source_cursor == "licitaciones:2026:5"
+    assert loaded.result_metadata["zip_bytes"] == 123
+
+
+async def test_source_fetch_run_records_failure(database: TenderDatabase) -> None:
+    """Failed source attempts should preserve a concise diagnostic."""
+
+    started = await database.start_source_fetch_run(
+        source=TenderSource.TED,
+        operation="search",
+        source_url="https://example.test/notices/search",
+    )
+
+    failed = await database.finish_source_fetch_run(
+        started.id,
+        status=SourceFetchRunStatus.FAILED,
+        error="network\nerror",
+    )
+
+    assert failed.status == SourceFetchRunStatus.FAILED
+    assert failed.error == "network error"

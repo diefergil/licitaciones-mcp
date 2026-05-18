@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "licitaciones-mcp"
-version = "0.1.0"
+version = "0.2.0"
 description = "Python library and MCP server for Spain-first public tender search, matching, and daily jobs."
 readme = "README.md"
 requires-python = ">=3.11"
@@ -24,7 +24,10 @@ classifiers = [
   "Topic :: Software Development :: Libraries :: Python Modules",
 ]
 dependencies = [
+  "alembic>=1.13.2",
+  "apscheduler>=3.10.4",
   "defusedxml>=0.7.1",
+  "hishel[async]>=1.2.1",
   "httpx>=0.27.0",
   "mcp>=1.10.0",
   "pydantic>=2.7.0",
@@ -32,8 +35,14 @@ dependencies = [
   "python-dotenv>=1.0.1",
   "sqlalchemy[asyncio]>=2.0.30",
   "asyncpg>=0.29.0",
+  "starlette>=0.37.0",
+  "structlog>=24.1.0",
+  "tenacity>=8.3.0",
   "typer>=0.12.3",
   "rich>=13.7.1",
+  "jsonschema>=4.22.0",
+  "ocdsmerge>=0.7.0",
+  "pypdf>=4.2.0",
 ]
 
 [project.optional-dependencies]
@@ -46,8 +55,20 @@ dev = [
   "pytest-asyncio>=0.23.0",
   "respx>=0.21.1",
   "ruff>=0.5.0",
+  "testcontainers[postgres]>=4.7.0",
   "types-defusedxml>=0.7.0.20250822",
   "mypy>=1.10.0",
+  "build>=1.2.1",
+]
+otel = [
+  "opentelemetry-api>=1.25.0",
+  "opentelemetry-sdk>=1.25.0",
+  "opentelemetry-exporter-otlp-proto-http>=1.25.0",
+  "opentelemetry-instrumentation-httpx>=0.46b0",
+  "opentelemetry-instrumentation-sqlalchemy>=0.46b0",
+]
+docling = [
+  "docling>=2.0.0",
 ]
 
 [project.scripts]
@@ -55,6 +76,9 @@ licitaciones-mcp = "licitaciones_mcp.cli:app"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/licitaciones_mcp"]
+
+[tool.hatch.build.targets.wheel.force-include]
+"src/licitaciones_mcp/_migrations/script.py.mako" = "licitaciones_mcp/_migrations/script.py.mako"
 
 [tool.ruff]
 line-length = 100
@@ -67,8 +91,16 @@ ignore = ["E501"]
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
+addopts = "-m 'not integration'"
+markers = [
+  "integration: marks tests that require external services (Docker, Postgres)",
+]
 
 [tool.mypy]
 python_version = "3.11"
 strict = true
 plugins = ["pydantic.mypy"]
+
+[[tool.mypy.overrides]]
+module = ["apscheduler.*", "opentelemetry.*"]
+ignore_missing_imports = true

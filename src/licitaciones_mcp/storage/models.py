@@ -91,6 +91,11 @@ class TenderDocumentRecord(Base):
     document_type: Mapped[str | None] = mapped_column(String(128))
     published_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     extra_metadata: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict, nullable=False)
+    extracted_text: Mapped[str | None] = mapped_column(Text)
+    extracted_sections: Mapped[list[dict[str, Any]] | None] = mapped_column(JSON)
+    parser_name: Mapped[str | None] = mapped_column(String(64))
+    parsed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    parse_error: Mapped[str | None] = mapped_column(Text)
 
     tender: Mapped[TenderRecord] = relationship(back_populates="documents")
 
@@ -120,6 +125,7 @@ class DailyJobRecord(Base):
     name: Mapped[str] = mapped_column(String(255), nullable=False, unique=True)
     filters: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
     hour_utc: Mapped[int] = mapped_column(Integer, default=7, nullable=False)
+    cron: Mapped[str | None] = mapped_column(String(128))
     enabled: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
     last_run_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     created_at: Mapped[datetime] = mapped_column(
@@ -154,3 +160,72 @@ class JobResultRecord(Base):
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=lambda: datetime.now(UTC), nullable=False
     )
+
+
+class SourceFetchRunRecord(Base):
+    """Persisted source fetch and ingestion attempt."""
+
+    __tablename__ = "source_fetch_runs"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    source: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
+    operation: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    status: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
+    dataset_kind: Mapped[str | None] = mapped_column(String(64), index=True)
+    year: Mapped[int | None] = mapped_column(Integer, index=True)
+    month: Mapped[int | None] = mapped_column(Integer)
+    source_url: Mapped[str | None] = mapped_column(Text)
+    source_cursor: Mapped[str | None] = mapped_column(String(255), index=True)
+    filters: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict, nullable=False)
+    started_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=lambda: datetime.now(UTC), nullable=False, index=True
+    )
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    duration_ms: Mapped[int | None] = mapped_column(Integer)
+    tenders_fetched: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    tenders_upserted: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    tenders_skipped: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    error: Mapped[str | None] = mapped_column(Text)
+    request_metadata: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict, nullable=False)
+    result_metadata: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict, nullable=False)
+
+
+class IngestCursorRecord(Base):
+    """Resumable cursor for a backfill iteration."""
+
+    __tablename__ = "ingest_cursors"
+    __table_args__ = (
+        UniqueConstraint("source", "kind", "cursor", name="uq_ingest_cursors_triple"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    source: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
+    kind: Mapped[str] = mapped_column(String(64), nullable=False)
+    cursor: Mapped[str] = mapped_column(String(255), nullable=False)
+    status: Mapped[str] = mapped_column(String(32), default="pending", nullable=False, index=True)
+    attempts: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    last_error: Mapped[str | None] = mapped_column(Text)
+    result_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=lambda: datetime.now(UTC), nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=lambda: datetime.now(UTC),
+        onupdate=lambda: datetime.now(UTC),
+        nullable=False,
+    )
+
+
+class SchedulerHeartbeatRecord(Base):
+    """Liveness signal recorded by the scheduler worker."""
+
+    __tablename__ = "scheduler_heartbeats"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    worker_id: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
+    beat_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=lambda: datetime.now(UTC), nullable=False
+    )
+    jobs_loaded: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    note: Mapped[str | None] = mapped_column(Text)

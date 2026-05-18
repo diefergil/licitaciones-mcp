@@ -53,6 +53,7 @@ class TenderToolService:
         offset: int = 0,
         order_by: Literal["score", "published_at", "deadline_at", "estimated_value"] = "score",
         order: Literal["asc", "desc"] = "desc",
+        query_mode: Literal["keyword", "semantic", "hybrid"] = "keyword",
         refresh_sources: bool = False,
     ) -> dict[str, Any]:
         """Search tenders from local storage, optionally refreshing sources first."""
@@ -79,10 +80,24 @@ class TenderToolService:
             offset=offset,
             order_by=order_by,
             order=order,
+            query_mode=query_mode,
         )
         if refresh_sources:
             await self.ingestor.ingest_for_filters(filters)
-        results = await self.database.search_tenders(filters)
+        if query_mode in ("semantic", "hybrid") and filters.text:
+            embedding = await self._embed_query(filters.text)
+            if query_mode == "semantic":
+                pairs = await self.database.semantic_search_tenders(
+                    query_embedding=embedding, top_k=filters.limit, filters=filters
+                )
+                results = [
+                    type("R", (), {"tender": t, "score": 1.0 - d, "reasons": ["semantic"]})()
+                    for t, d in pairs
+                ]
+            else:
+                results = await self.database.hybrid_search(filters, query_embedding=embedding)
+        else:
+            results = await self.database.search_tenders(filters)
         return {
             "count": len(results),
             "filters": filters.model_dump(mode="json"),
@@ -93,6 +108,41 @@ class TenderToolService:
                     "reasons": result.reasons,
                 }
                 for result in results
+            ],
+        }
+
+    async def _embed_query(self, query: str) -> list[float]:
+        """Embed a query string using the configured embedder; returns [] when disabled."""
+
+        from licitaciones_mcp.embeddings.base import NullEmbedder
+        from licitaciones_mcp.embeddings.factory import build_embedder
+
+        embedder = build_embedder(self.settings)
+        if isinstance(embedder, NullEmbedder):
+            return []
+        vectors = await embedder.embed([query])
+        return vectors[0] if vectors else []
+
+    async def semantic_search_tenders(self, *, text: str, top_k: int = 10) -> dict[str, Any]:
+        """Find tenders semantically close to ``text``."""
+
+        embedding = await self._embed_query(text)
+        if not embedding:
+            return {
+                "count": 0,
+                "results": [],
+                "error": "embeddings_disabled",
+                "message": "No embedding provider configured.",
+            }
+        pairs = await self.database.semantic_search_tenders(query_embedding=embedding, top_k=top_k)
+        return {
+            "count": len(pairs),
+            "results": [
+                {
+                    "tender": PublicTender.from_tender(tender).model_dump(mode="json"),
+                    "distance": distance,
+                }
+                for tender, distance in pairs
             ],
         }
 
@@ -137,6 +187,30 @@ class TenderToolService:
 
         cpv_codes = await self.database.search_cpv_codes(text=text, limit=limit)
         return {"count": len(cpv_codes), "cpv_codes": cpv_codes}
+
+    async def list_source_runs(
+        self,
+        *,
+        source: str | None = None,
+        status: str | None = None,
+        limit: int = 20,
+    ) -> dict[str, Any]:
+        """List recent source fetch and ingestion attempts."""
+
+        runs = await self.database.list_source_fetch_runs(
+            source=_parse_source(source) if source else None,
+            status=status.lower() if status else None,
+            limit=limit,
+        )
+        return {"count": len(runs), "runs": [run.model_dump(mode="json") for run in runs]}
+
+    async def get_source_run(self, *, run_id: str) -> dict[str, Any]:
+        """Return one source fetch and ingestion attempt."""
+
+        run = await self.database.get_source_fetch_run(run_id)
+        if run is None:
+            return {"error": "not_found", "message": f"Source run not found: {run_id}"}
+        return {"run": run.model_dump(mode="json")}
 
     async def ingest_source_period(
         self,
@@ -184,6 +258,7 @@ class TenderToolService:
         sources: list[str] | None = None,
         only_open: bool = True,
         hour_utc: int = 7,
+        cron: str | None = None,
         limit: int = 50,
     ) -> dict[str, Any]:
         """Create or replace a daily tender search job."""
@@ -199,7 +274,7 @@ class TenderToolService:
             limit=limit,
         )
         job = await self.database.create_daily_job(
-            DailyJob(name=name, filters=filters, hour_utc=hour_utc)
+            DailyJob(name=name, filters=filters, hour_utc=hour_utc, cron=cron)
         )
         return {"job": job.model_dump(mode="json")}
 
@@ -265,6 +340,49 @@ class TenderToolService:
             refresh_sources=refresh_sources,
         )
 
+    async def export_tender_ocds(self, *, tender_id: str) -> dict[str, Any]:
+        """Export a single tender as an OCDS release package."""
+
+        from licitaciones_mcp.ocds import build_release_package, tender_to_release
+
+        tender = await self.database.get_tender(tender_id)
+        if tender is None:
+            return {"error": "not_found", "message": f"Tender not found: {tender_id}"}
+        release = tender_to_release(tender)
+        return build_release_package([release])
+
+    async def get_tender_document(self, *, document_id: str) -> dict[str, Any]:
+        """Return a parsed tender document (text + sections)."""
+
+        record = await self.database.get_tender_document(document_id)
+        if record is None:
+            return {"error": "not_found", "message": f"Document not found: {document_id}"}
+        return record
+
+    async def export_search_ocds(
+        self,
+        *,
+        text: str | None = None,
+        cpv_codes: list[str] | None = None,
+        regions: list[str] | None = None,
+        only_open: bool = False,
+        limit: int = 50,
+    ) -> dict[str, Any]:
+        """Export search results as an OCDS release package."""
+
+        from licitaciones_mcp.ocds import build_release_package, tender_to_release
+
+        filters = self._build_filters(
+            text=text,
+            cpv_codes=cpv_codes,
+            regions=regions,
+            only_open=only_open,
+            limit=limit,
+        )
+        results = await self.database.search_tenders(filters)
+        releases = [tender_to_release(item.tender) for item in results]
+        return build_release_package(releases)
+
     def _build_filters(
         self,
         *,
@@ -289,6 +407,7 @@ class TenderToolService:
         offset: int = 0,
         order_by: Literal["score", "published_at", "deadline_at", "estimated_value"] = "score",
         order: Literal["asc", "desc"] = "desc",
+        query_mode: Literal["keyword", "semantic", "hybrid"] = "keyword",
     ) -> TenderFilters:
         return TenderFilters(
             text=normalize_text(text),
@@ -312,6 +431,7 @@ class TenderToolService:
             offset=max(0, offset),
             order_by=order_by,
             order=order,
+            query_mode=query_mode,
         )
 
 
