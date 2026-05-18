@@ -40,6 +40,9 @@ class _FakeDatabase:
     async def pgvector_available(self) -> bool:
         return self._pgvector_available
 
+    async def list_source_fetch_runs(self, **_kwargs: object) -> list[object]:
+        raise AssertionError("invalid status should not hit the database")
+
 
 class _FakeEmbedder(Embedder):
     provider = "test"
@@ -122,3 +125,15 @@ async def test_search_clamps_large_offsets_before_hitting_database() -> None:
 
     assert database.last_filters is not None
     assert database.last_filters.offset == MAX_TENDER_SEARCH_OFFSET
+
+
+@pytest.mark.asyncio
+async def test_list_source_runs_returns_structured_error_for_invalid_status() -> None:
+    database = _FakeDatabase()
+    service = TenderToolService(Settings(), database)  # type: ignore[arg-type]
+
+    result = await service.list_source_runs(status="done")
+
+    assert result["error"] == "invalid_status"
+    assert result["count"] == 0
+    assert result["runs"] == []

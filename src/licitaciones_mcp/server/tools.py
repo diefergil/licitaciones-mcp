@@ -10,6 +10,7 @@ from licitaciones_mcp.core.models import (
     MAX_TENDER_SEARCH_OFFSET,
     DailyJob,
     PublicTender,
+    SourceFetchRunStatus,
     TenderFilters,
     TenderSearchResult,
     TenderSource,
@@ -236,9 +237,31 @@ class TenderToolService:
     ) -> dict[str, Any]:
         """List recent source fetch and ingestion attempts."""
 
+        source_filter: TenderSource | None = None
+        if source:
+            try:
+                source_filter = _parse_source(source)
+            except ValueError:
+                return {
+                    "error": "invalid_source",
+                    "message": f"Unsupported source: {source}",
+                    "count": 0,
+                    "runs": [],
+                }
+        status_filter: SourceFetchRunStatus | None = None
+        if status:
+            try:
+                status_filter = SourceFetchRunStatus(status.lower())
+            except ValueError:
+                return {
+                    "error": "invalid_status",
+                    "message": f"Unsupported source run status: {status}",
+                    "count": 0,
+                    "runs": [],
+                }
         runs = await self.database.list_source_fetch_runs(
-            source=_parse_source(source) if source else None,
-            status=status.lower() if status else None,
+            source=source_filter,
+            status=status_filter,
             limit=limit,
         )
         return {"count": len(runs), "runs": [run.model_dump(mode="json") for run in runs]}

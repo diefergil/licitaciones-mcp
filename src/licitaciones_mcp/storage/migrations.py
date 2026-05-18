@@ -16,6 +16,7 @@ from typing import Any, TypeVar, cast
 
 from alembic import command
 from alembic.config import Config
+from alembic.script import ScriptDirectory
 from sqlalchemy import text
 from sqlalchemy.exc import ProgrammingError
 from sqlalchemy.ext.asyncio import create_async_engine
@@ -58,6 +59,12 @@ def revision(message: str, *, autogenerate: bool = False, settings: Settings | N
     """Create a new Alembic revision."""
 
     command.revision(_make_config(settings), message=message, autogenerate=autogenerate)
+
+
+def head(*, settings: Settings | None = None) -> str | None:
+    """Return the current packaged Alembic head revision."""
+
+    return ScriptDirectory.from_config(_make_config(settings)).get_current_head()
 
 
 async def _current_async(database_url: str) -> str | None:

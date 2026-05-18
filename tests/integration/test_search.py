@@ -122,3 +122,31 @@ async def test_hybrid_applies_pagination_once_after_fusion(database: TenderDatab
     )
 
     assert [result.tender.external_id for result in results] == ["page-2"]
+
+
+async def test_semantic_applies_structured_filters_before_limit(database: TenderDatabase) -> None:
+    tenders = [
+        await _tender("semantic-es", "Servicio fotovoltaico España"),
+        await _tender("semantic-fr", "Service solaire France"),
+    ]
+    tenders[1].source = TenderSource.TED
+    tenders[1].country = "FR"
+    ids = await database.upsert_tenders(tenders)
+    await database.upsert_embeddings(
+        provider="test",
+        model="fake",
+        items=[
+            (ids[0], [1.0, 0.0]),
+            (ids[1], [0.8, 0.2]),
+        ],
+    )
+
+    results = await database.semantic_search_tenders(
+        query_embedding=[1.0, 0.0],
+        top_k=1,
+        filters=TenderFilters(sources=[TenderSource.TED], country="FR"),
+        provider="test",
+        model="fake",
+    )
+
+    assert [tender.external_id for tender, _distance in results] == ["semantic-fr"]

@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from typing import Any
 
-from sqlalchemy import String, bindparam, delete, or_, select, text
+from sqlalchemy import String, bindparam, delete, literal_column, or_, select, text
 from sqlalchemy.dialects.postgresql import ARRAY
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import (
@@ -472,27 +472,35 @@ class TenderDatabase:
         if not await self.pgvector_available():
             return []
         literal = "[" + ",".join(f"{v:.8f}" for v in query_embedding) + "]"
-        sql = (
-            "SELECT t.id, e.embedding_vector <=> (:__emb)::vector AS distance "
-            "FROM tenders t "
-            "JOIN tender_embeddings e ON e.tender_id = t.id "
-            "WHERE e.embedding_vector IS NOT NULL "
-            "AND e.dimensions = :__dim "
-            "AND (:__provider IS NULL OR e.provider = :__provider) "
-            "AND (:__model IS NULL OR e.model = :__model) "
-            "ORDER BY distance ASC "
-            "LIMIT :__k"
+        embedding_table = TenderEmbeddingRecord.__table__.alias("e")
+        distance = (
+            literal_column("e.embedding_vector")
+            .op("<=>")(text("(:__emb)::vector"))
+            .label("distance")
         )
+        statement = (
+            select(TenderRecord.id, distance)
+            .join(embedding_table, embedding_table.c.tender_id == TenderRecord.id)
+            .where(literal_column("e.embedding_vector").is_not(None))
+            .where(embedding_table.c.dimensions == bindparam("__dim"))
+            .order_by(distance.asc())
+            .limit(bindparam("__k"))
+        )
+        if provider is not None:
+            statement = statement.where(embedding_table.c.provider == provider)
+        if model is not None:
+            statement = statement.where(embedding_table.c.model == model)
+        if filters is not None:
+            statement = self._apply_structured_filters(statement, filters)
         async with self.session_factory() as session:
             rows = (
                 await session.execute(
-                    text(sql).bindparams(
-                        __emb=literal,
-                        __k=max(1, min(top_k, _SEARCH_CANDIDATE_MAX)),
-                        __dim=len(query_embedding),
-                        __provider=provider,
-                        __model=model,
-                    )
+                    statement,
+                    {
+                        "__emb": literal,
+                        "__dim": len(query_embedding),
+                        "__k": max(1, min(top_k, _SEARCH_CANDIDATE_MAX)),
+                    },
                 )
             ).all()
             if not rows:
@@ -504,8 +512,6 @@ class TenderDatabase:
                 .options(selectinload(TenderRecord.documents))
                 .where(TenderRecord.id.in_(ids))
             )
-            if filters is not None:
-                statement = self._apply_structured_filters(statement, filters)
             records = (await session.execute(statement)).scalars().all()
         ordered = sorted(records, key=lambda r: distances.get(r.id, 1.0))
         return [(_record_to_tender(r), distances[r.id]) for r in ordered]
