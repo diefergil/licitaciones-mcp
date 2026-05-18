@@ -16,6 +16,7 @@ import asyncio
 import time
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager, suppress
+from email.utils import parsedate_to_datetime
 from pathlib import Path
 from urllib.parse import urlsplit
 
@@ -24,6 +25,7 @@ import httpx
 from hishel.httpx import AsyncCacheTransport
 from tenacity import (
     AsyncRetrying,
+    RetryCallState,
     retry_if_exception_type,
     stop_after_attempt,
     wait_exponential,
@@ -77,6 +79,7 @@ _DEFAULT_USER_AGENT = (
     f"licitaciones-mcp/{__version__} (+https://github.com/diefergil/licitaciones-mcp)"
 )
 _RETRYABLE_STATUS = frozenset({408, 425, 429, 500, 502, 503, 504})
+_EXPONENTIAL_WAIT = wait_exponential(multiplier=1.0, min=1.0, max=30.0)
 
 
 def default_user_agent() -> str:
@@ -188,6 +191,27 @@ class RetryingClient:
 
         return await self.request("POST", url, **kwargs)
 
+    @asynccontextmanager
+    async def stream(
+        self,
+        method: str,
+        url: str,
+        **kwargs: object,
+    ) -> AsyncIterator[httpx.Response]:
+        """Stream a retrying request without pre-buffering the response body."""
+
+        host = urlsplit(url).netloc or self.name
+        async with stream_with_retries(
+            self._client,
+            method,
+            url,
+            limiter=self._limiter,
+            host=host,
+            max_attempts=self._max_attempts,
+            **kwargs,
+        ) as response:
+            yield response
+
 
 async def request_with_retries(
     client: httpx.AsyncClient,
@@ -202,8 +226,8 @@ async def request_with_retries(
     """Issue an HTTP request with rate limiting and exponential backoff.
 
     Retries on transient network errors and on ``_RETRYABLE_STATUS`` codes.
-    The ``Retry-After`` header is parsed when present on 429 responses; the
-    function sleeps until the suggested time before the next attempt.
+    The ``Retry-After`` header is folded into tenacity's wait strategy so
+    each failed attempt sleeps at most once before the next retry.
     """
 
     target_host = host or urlsplit(url).netloc
@@ -211,7 +235,8 @@ async def request_with_retries(
     async for attempt in AsyncRetrying(
         retry=retry_if_exception_type((httpx.HTTPError, _RetryableStatus)),
         stop=stop_after_attempt(max_attempts),
-        wait=wait_exponential(multiplier=1.0, min=1.0, max=30.0),
+        wait=_retry_wait,
+        sleep=asyncio.sleep,
         reraise=True,
     ):
         with attempt:
@@ -219,12 +244,70 @@ async def request_with_retries(
                 await limiter.acquire(target_host)
             response = await client.request(method, url, **kwargs)  # type: ignore[arg-type]
             if response.status_code in _RETRYABLE_STATUS:
-                retry_after = response.headers.get("Retry-After")
-                if retry_after:
-                    with suppress(ValueError):
-                        await asyncio.sleep(min(float(retry_after), 30.0))
                 raise _RetryableStatus(response)
             return response
 
     # Unreachable: AsyncRetrying with reraise=True either returns or raises.
     raise RuntimeError("retry loop exited without returning a response")
+
+
+@asynccontextmanager
+async def stream_with_retries(
+    client: httpx.AsyncClient,
+    method: str,
+    url: str,
+    *,
+    limiter: RateLimiter | None = None,
+    host: str | None = None,
+    max_attempts: int = 5,
+    **kwargs: object,
+) -> AsyncIterator[httpx.Response]:
+    """Issue a streaming HTTP request with rate limiting and retries."""
+
+    target_host = host or urlsplit(url).netloc
+    async for attempt in AsyncRetrying(
+        retry=retry_if_exception_type((httpx.HTTPError, _RetryableStatus)),
+        stop=stop_after_attempt(max_attempts),
+        wait=_retry_wait,
+        sleep=asyncio.sleep,
+        reraise=True,
+    ):
+        with attempt:
+            if limiter is not None:
+                await limiter.acquire(target_host)
+            stream_context = client.stream(method, url, **kwargs)  # type: ignore[arg-type]
+            response = await stream_context.__aenter__()
+            if response.status_code in _RETRYABLE_STATUS:
+                await stream_context.__aexit__(None, None, None)
+                raise _RetryableStatus(response)
+        try:
+            yield response
+        finally:
+            await stream_context.__aexit__(None, None, None)
+        return
+
+    raise RuntimeError("retry loop exited without returning a response")
+
+
+def _retry_wait(retry_state: RetryCallState) -> float:
+    """Return Retry-After seconds when present, otherwise exponential backoff."""
+
+    outcome = retry_state.outcome
+    if outcome is not None and outcome.failed:
+        exception = outcome.exception()
+        if isinstance(exception, _RetryableStatus):
+            retry_after = _retry_after_seconds(exception.response.headers.get("Retry-After"))
+            if retry_after is not None:
+                return retry_after
+    return float(_EXPONENTIAL_WAIT(retry_state))
+
+
+def _retry_after_seconds(value: str | None) -> float | None:
+    if not value:
+        return None
+    with suppress(ValueError):
+        return max(0.0, min(float(value), 30.0))
+    with suppress(ValueError, TypeError, OverflowError):
+        parsed = parsedate_to_datetime(value)
+        return max(0.0, min(parsed.timestamp() - time.time(), 30.0))
+    return None

@@ -565,6 +565,8 @@ class TenderDatabase:
             )
         if filters.only_open:
             statement = statement.where(TenderRecord.status == TenderStatus.OPEN.value)
+        if filters.country:
+            statement = statement.where(TenderRecord.country == filters.country)
         if filters.published_from:
             statement = statement.where(TenderRecord.published_at >= filters.published_from)
         if filters.published_to:

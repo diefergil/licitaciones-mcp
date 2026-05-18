@@ -10,6 +10,7 @@ import hashlib
 from datetime import UTC, datetime
 from typing import Any
 
+from licitaciones_mcp.core.countries import normalize_country_code
 from licitaciones_mcp.core.models import Tender, TenderStatus
 from licitaciones_mcp.core.normalization import fold_text
 
@@ -47,7 +48,11 @@ def _party(tender: Tender) -> dict[str, Any] | None:
         party["name"] = tender.buyer_name
     party["roles"] = ["buyer"]
     if tender.buyer_tax_id:
-        party["identifier"] = {"scheme": "ES-VAT", "id": tender.buyer_tax_id}
+        identifier = {"id": tender.buyer_tax_id}
+        vat_scheme = _vat_scheme(tender.country)
+        if vat_scheme:
+            identifier["scheme"] = vat_scheme
+        party["identifier"] = identifier
     address: dict[str, Any] = {}
     if tender.region:
         address["region"] = tender.region
@@ -56,6 +61,16 @@ def _party(tender: Tender) -> dict[str, Any] | None:
     if address:
         party["address"] = address
     return party
+
+
+def _vat_scheme(country: str | None) -> str | None:
+    try:
+        country_code = normalize_country_code(country)
+    except ValueError:
+        return None
+    if country_code is None or country_code == "XX":
+        return None
+    return f"{country_code}-VAT"
 
 
 def _items(tender: Tender) -> list[dict[str, Any]]:

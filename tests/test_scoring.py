@@ -77,3 +77,16 @@ def test_structured_source_and_buyer_filters() -> None:
 def test_tender_filters_reject_unbounded_offsets() -> None:
     with pytest.raises(ValidationError):
         TenderFilters(offset=MAX_TENDER_SEARCH_OFFSET + 1)
+
+
+def test_country_filter_uses_normalized_iso2_codes() -> None:
+    tender = Tender(
+        source=TenderSource.TED,
+        external_id="1",
+        title="Supply",
+        country="FRA",
+    )
+
+    assert tender.country == "FR"
+    assert tender_matches_filters(tender, TenderFilters(country="FR")) is True
+    assert tender_matches_filters(tender, TenderFilters(country="ES")) is False

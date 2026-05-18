@@ -5,6 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
+from licitaciones_mcp.core.countries import normalize_country_code, ted_country_code
 from licitaciones_mcp.core.dedupe import attach_dedupe_key
 from licitaciones_mcp.core.models import (
     SourceFetchResult,
@@ -118,7 +119,9 @@ def build_ted_search_payload(
     if filters.notice_types:
         notices = ",".join(filters.notice_types)
         query_parts.append(f"notice-type IN ({notices})")
-    country = (filters.country or "ESP").upper()
+    country = ted_country_code(filters.country or "ES")
+    if country is None:
+        raise ValueError(f"Unsupported TED country filter: {filters.country}")
     if not any("buyer-country" in part for part in query_parts):
         query_parts.append(f"buyer-country={country}")
     return {
@@ -254,8 +257,7 @@ def _links(notice: dict[str, Any], external_id: str) -> list[str]:
 
 
 def _country_code(value: str | None) -> str:
-    if value in {"ESP", "ES", "Spain", "España"}:
-        return "ES"
-    if value and len(value) == 2:
-        return value.upper()
-    return "ES"
+    try:
+        return normalize_country_code(value) or "XX"
+    except ValueError:
+        return "XX"

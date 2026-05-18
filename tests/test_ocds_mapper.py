@@ -91,6 +91,24 @@ def test_unknown_contract_type_omits_main_procurement_category() -> None:
     assert "mainProcurementCategory" not in release["tender"]
 
 
+def test_party_identifier_vat_scheme_uses_tender_country() -> None:
+    tender = _make_tender()
+    tender.country = "FR"
+
+    release = tender_to_release(tender)
+
+    assert release["parties"][0]["identifier"] == {"scheme": "FR-VAT", "id": "P0000000A"}
+
+
+def test_party_identifier_omits_vat_scheme_for_unknown_country() -> None:
+    tender = _make_tender()
+    tender.country = "XX"
+
+    release = tender_to_release(tender)
+
+    assert release["parties"][0]["identifier"] == {"id": "P0000000A"}
+
+
 def test_release_package_metadata_can_be_overridden() -> None:
     package = build_release_package(
         [],

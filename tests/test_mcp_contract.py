@@ -40,5 +40,6 @@ async def test_mcp_builds_with_expected_tools() -> None:
     properties = search_schema["properties"]
     assert "text" in properties
     assert "cpv_codes" in properties
+    assert "country" in properties
     assert "query" not in properties
     assert "query_mode" in properties

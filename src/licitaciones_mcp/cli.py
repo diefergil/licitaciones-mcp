@@ -156,6 +156,7 @@ def search(
     buyer: Annotated[str | None, typer.Option("--buyer")] = None,
     status: Annotated[list[str] | None, typer.Option("--status")] = None,
     source: Annotated[list[str] | None, typer.Option("--source")] = None,
+    country: Annotated[str | None, typer.Option("--country")] = None,
     only_open: Annotated[bool, typer.Option("--only-open")] = False,
     refresh_sources: Annotated[bool, typer.Option("--refresh-sources")] = False,
     limit: Annotated[int, typer.Option("--limit")] = 20,
@@ -174,6 +175,7 @@ def search(
             buyer=buyer,
             statuses=status,
             sources=source,
+            country=country,
             only_open=only_open,
             refresh_sources=refresh_sources,
             limit=limit,
@@ -521,7 +523,7 @@ def ingest_backfill(
 def ingest_ted(
     text: Annotated[str | None, typer.Option("--text")] = None,
     cpv: Annotated[list[str] | None, typer.Option("--cpv")] = None,
-    country: Annotated[str, typer.Option("--country")] = "ESP",
+    country: Annotated[str, typer.Option("--country")] = "ES",
     limit: Annotated[int, typer.Option("--limit", min=1, max=500)] = 100,
 ) -> None:
     """Pull TED notices with the given filters."""
@@ -534,9 +536,7 @@ def ingest_ted(
         from licitaciones_mcp.jobs.runner import SourceIngestor
 
         ingestor = SourceIngestor(settings, database)
-        filters = TenderFilters(
-            text=text, cpv_codes=cpv or [], limit=limit, country=country.upper()
-        )
+        filters = TenderFilters(text=text, cpv_codes=cpv or [], limit=limit, country=country)
         # Force the TED branch by ensuring text/cpv is set; the ingestor
         # already gates TED behind that signal.
         if not (filters.text or filters.cpv_codes):

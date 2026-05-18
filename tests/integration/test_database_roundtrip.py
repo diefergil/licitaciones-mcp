@@ -52,6 +52,20 @@ async def test_dedupe_key_prevents_duplicate_rows(database: TenderDatabase) -> N
     assert first_ids == second_ids
 
 
+async def test_search_applies_country_filter(database: TenderDatabase) -> None:
+    """Country filters should be enforced at the SQL layer."""
+
+    spanish = await _make_tender("country-es", "Servicio solar España")
+    french = await _make_tender("country-fr", "Service solaire France")
+    french.source = TenderSource.TED
+    french.country = "FR"
+    await database.upsert_tenders([spanish, french])
+
+    results = await database.search_tenders(TenderFilters(country="FR", limit=10))
+
+    assert [result.tender.external_id for result in results] == ["country-fr"]
+
+
 async def test_upsert_embeddings_rejects_mixed_dimensions(database: TenderDatabase) -> None:
     """One embedding batch must not mix vector dimensions."""
 

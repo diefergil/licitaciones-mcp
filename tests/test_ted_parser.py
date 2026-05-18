@@ -34,3 +34,4 @@ def test_build_ted_search_payload_uses_country_filter() -> None:
     payload = build_ted_search_payload(TenderFilters(text="energia", country="FRA"))
 
     assert "buyer-country=FRA" in payload["query"]
+    assert TenderFilters(country="FRA").country == "FR"
