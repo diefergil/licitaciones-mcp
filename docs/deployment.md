@@ -8,6 +8,7 @@ Recommended v1 deployment is one self-hosted instance per workspace or organizat
 - One Postgres database
 - One MCP service container
 - Optional reverse proxy / TLS termination
+- Optional bearer token on the MCP HTTP transport
 - Backups configured at the server or Postgres volume layer
 
 ## Install
@@ -27,7 +28,7 @@ Point any MCP-compatible client at the server endpoint:
 http://<host>:8080/mcp
 ```
 
-Use bearer/API-key auth at the reverse proxy layer until the MCP server grows first-party auth.
+Set `LICITACIONES_MCP_AUTH_TOKEN` to require `Authorization: Bearer <token>` on the MCP HTTP transport. Keep TLS at a reverse proxy or another trusted network edge.
 
 ## Embeddings
 
@@ -38,5 +39,5 @@ Embeddings are disabled unless the instance has provider settings. Search still 
 ```bash
 git pull
 docker compose up -d --build
-docker compose exec mcp licitaciones-mcp init-db
+docker compose exec mcp licitaciones-mcp migrate-db
 ```

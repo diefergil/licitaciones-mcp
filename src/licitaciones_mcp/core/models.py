@@ -6,7 +6,12 @@ from datetime import UTC, date, datetime
 from enum import StrEnum
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field, HttpUrl
+from pydantic import BaseModel, Field, HttpUrl, field_validator
+
+from licitaciones_mcp.core.countries import normalize_country_code
+
+MAX_TENDER_SEARCH_LIMIT = 500
+MAX_TENDER_SEARCH_OFFSET = 1_000
 
 
 class TenderSource(StrEnum):
@@ -55,6 +60,7 @@ class TenderDocument(BaseModel):
 class Tender(BaseModel):
     """Normalized public tender record used across sources and MCP tools."""
 
+    id: str | None = None
     source: TenderSource
     external_id: str
     title: str
@@ -83,6 +89,14 @@ class Tender(BaseModel):
     source_metadata: dict[str, Any] = Field(default_factory=dict)
     quality_issues: list[TenderQualityIssue] = Field(default_factory=list)
     dedupe_key: str | None = None
+
+    @field_validator("country", mode="before")
+    @classmethod
+    def _normalize_country(cls, value: str | None) -> str:
+        try:
+            return normalize_country_code(value) or "XX"
+        except ValueError:
+            return "XX"
 
     @property
     def source_id(self) -> str:
@@ -131,10 +145,20 @@ class TenderFilters(BaseModel):
     min_value: float | None = None
     max_value: float | None = None
     only_open: bool = False
-    limit: int = Field(default=20, ge=1, le=500)
-    offset: int = Field(default=0, ge=0)
+    limit: int = Field(default=20, ge=1, le=MAX_TENDER_SEARCH_LIMIT)
+    offset: int = Field(default=0, ge=0, le=MAX_TENDER_SEARCH_OFFSET)
     order_by: Literal["score", "published_at", "deadline_at", "estimated_value"] = "score"
     order: Literal["asc", "desc"] = "desc"
+    query_mode: Literal["keyword", "semantic", "hybrid"] = "keyword"
+    country: str | None = Field(
+        default=None,
+        description="ISO-2 country filter applied to persisted tenders and local matching.",
+    )
+
+    @field_validator("country", mode="before")
+    @classmethod
+    def _normalize_country_filter(cls, value: str | None) -> str | None:
+        return normalize_country_code(value)
 
 
 class TenderSearchResult(BaseModel):
@@ -160,6 +184,7 @@ class DailyJob(BaseModel):
     name: str
     filters: TenderFilters
     hour_utc: int = Field(default=7, ge=0, le=23)
+    cron: str | None = None
     enabled: bool = True
     created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
 
@@ -192,6 +217,38 @@ class SourceFetchResult(BaseModel):
     fetched_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
     source_cursor: str | None = None
     metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class SourceFetchRunStatus(StrEnum):
+    """Persisted source fetch run status."""
+
+    RUNNING = "running"
+    SUCCEEDED = "succeeded"
+    FAILED = "failed"
+
+
+class SourceFetchRun(BaseModel):
+    """Audit record for one source fetch and ingestion attempt."""
+
+    id: str
+    source: TenderSource
+    operation: str
+    status: SourceFetchRunStatus
+    dataset_kind: str | None = None
+    year: int | None = None
+    month: int | None = None
+    source_url: str | None = None
+    source_cursor: str | None = None
+    filters: dict[str, Any] = Field(default_factory=dict)
+    started_at: datetime
+    finished_at: datetime | None = None
+    duration_ms: int | None = None
+    tenders_fetched: int = 0
+    tenders_upserted: int = 0
+    tenders_skipped: int = 0
+    error: str | None = None
+    request_metadata: dict[str, Any] = Field(default_factory=dict)
+    result_metadata: dict[str, Any] = Field(default_factory=dict)
 
 
 class MCPErrorResponse(BaseModel):

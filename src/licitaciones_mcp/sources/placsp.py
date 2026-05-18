@@ -6,9 +6,9 @@ import zipfile
 from dataclasses import dataclass
 from enum import StrEnum
 from io import BytesIO
+from pathlib import Path
 from typing import Any
 
-import httpx
 from defusedxml import ElementTree as ET
 
 from licitaciones_mcp.core.dedupe import attach_dedupe_key
@@ -28,13 +28,14 @@ from licitaciones_mcp.core.normalization import (
     parse_money,
 )
 from licitaciones_mcp.core.scoring import tender_matches_filters
+from licitaciones_mcp.http import default_user_agent, make_async_client
 from licitaciones_mcp.sources.base import TenderSourceClient
 
 ATOM_NS = {"atom": "http://www.w3.org/2005/Atom"}
 CAC_NS = "urn:dgpe:names:draft:codice:schema:xsd:CommonAggregateComponents-2"
 CBC_NS = "urn:dgpe:names:draft:codice:schema:xsd:CommonBasicComponents-2"
 PLACSP_BASE = "https://contrataciondelsectorpublico.gob.es"
-DEFAULT_USER_AGENT = "licitaciones-mcp/0.1"
+DEFAULT_USER_AGENT = default_user_agent()
 
 
 class PLACSPDatasetKind(StrEnum):
@@ -104,6 +105,9 @@ class PLACSPClient(TenderSourceClient):
         timeout: float = 60.0,
         verify_ssl: bool = True,
         user_agent: str = DEFAULT_USER_AGENT,
+        rate_per_sec: float = 2.0,
+        max_attempts: int = 5,
+        cache_dir: Path | None = None,
     ) -> None:
         """Create a PLACSP client."""
 
@@ -111,6 +115,22 @@ class PLACSPClient(TenderSourceClient):
         self.timeout = timeout
         self.verify_ssl = verify_ssl
         self.user_agent = user_agent
+        self.rate_per_sec = rate_per_sec
+        self.max_attempts = max_attempts
+        self.cache_dir = cache_dir
+
+    def _client(self) -> Any:
+        """Return an async-context manager yielding the shared HTTP client."""
+
+        return make_async_client(
+            name="placsp",
+            rate_per_sec=self.rate_per_sec,
+            timeout=self.timeout,
+            verify_ssl=self.verify_ssl,
+            user_agent=self.user_agent,
+            cache_dir=self.cache_dir,
+            max_attempts=self.max_attempts,
+        )
 
     async def fetch(self, filters: TenderFilters) -> SourceFetchResult:
         """Fetch and parse the configured PLACSP Atom feed."""
@@ -121,12 +141,7 @@ class PLACSPClient(TenderSourceClient):
                 tenders=[],
                 metadata={"skipped": "PLACSP_FEED_URL is not configured"},
             )
-        async with httpx.AsyncClient(
-            timeout=self.timeout,
-            verify=self.verify_ssl,
-            headers={"User-Agent": self.user_agent},
-            follow_redirects=True,
-        ) as client:
+        async with self._client() as client:
             response = await client.get(self.feed_url)
             response.raise_for_status()
         tenders = parse_placsp_atom(response.text, source_metadata={"feed_url": self.feed_url})
@@ -149,12 +164,7 @@ class PLACSPClient(TenderSourceClient):
 
         dataset_kind = PLACSPDatasetKind(kind)
         url = build_placsp_period_url(dataset_kind, year=year, month=month)
-        async with httpx.AsyncClient(
-            timeout=self.timeout,
-            verify=self.verify_ssl,
-            headers={"User-Agent": self.user_agent},
-            follow_redirects=True,
-        ) as client:
+        async with self._client() as client:
             response = await client.get(url)
             response.raise_for_status()
         source_metadata = {

@@ -22,16 +22,24 @@ async def test_mcp_builds_with_expected_tools() -> None:
         "get_recent_tenders",
         "search_buyers",
         "search_cpv_codes",
+        "list_source_runs",
+        "get_source_run",
         "ingest_source_period",
         "create_daily_job",
         "list_jobs",
         "run_job_now",
         "get_job_results",
         "match_tenders",
+        "semantic_search_tenders",
+        "export_tender_ocds",
+        "export_search_ocds",
+        "get_tender_document",
     }.issubset(tool_names)
 
     search_schema = next(tool.inputSchema for tool in tools if tool.name == "search_tenders")
     properties = search_schema["properties"]
     assert "text" in properties
     assert "cpv_codes" in properties
+    assert "country" in properties
     assert "query" not in properties
+    assert "query_mode" in properties

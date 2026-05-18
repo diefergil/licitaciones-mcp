@@ -1,6 +1,15 @@
 from datetime import UTC, datetime
 
-from licitaciones_mcp.core.models import Tender, TenderFilters, TenderSource, TenderStatus
+import pytest
+from pydantic import ValidationError
+
+from licitaciones_mcp.core.models import (
+    MAX_TENDER_SEARCH_OFFSET,
+    Tender,
+    TenderFilters,
+    TenderSource,
+    TenderStatus,
+)
 from licitaciones_mcp.core.scoring import rank_tenders, tender_matches_filters
 
 
@@ -63,3 +72,27 @@ def test_structured_source_and_buyer_filters() -> None:
         )
         is False
     )
+
+
+def test_tender_filters_reject_unbounded_offsets() -> None:
+    with pytest.raises(ValidationError):
+        TenderFilters(offset=MAX_TENDER_SEARCH_OFFSET + 1)
+
+
+def test_country_filter_uses_normalized_iso2_codes() -> None:
+    tender = Tender(
+        source=TenderSource.TED,
+        external_id="1",
+        title="Supply",
+        country="FRA",
+    )
+
+    assert tender.country == "FR"
+    assert tender_matches_filters(tender, TenderFilters(country="FR")) is True
+    assert tender_matches_filters(tender, TenderFilters(country="ES")) is False
+
+
+def test_tender_unknown_country_falls_back_to_sentinel() -> None:
+    tender = Tender(source=TenderSource.TED, external_id="1", title="Supply", country="Atlantis")
+
+    assert tender.country == "XX"

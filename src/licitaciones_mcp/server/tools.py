@@ -4,11 +4,17 @@ from __future__ import annotations
 
 from typing import Any, Literal
 
+from pydantic import ValidationError
+
 from licitaciones_mcp.config import Settings
 from licitaciones_mcp.core.models import (
+    MAX_TENDER_SEARCH_LIMIT,
+    MAX_TENDER_SEARCH_OFFSET,
     DailyJob,
     PublicTender,
+    SourceFetchRunStatus,
     TenderFilters,
+    TenderSearchResult,
     TenderSource,
     TenderStatus,
 )
@@ -49,50 +55,139 @@ class TenderToolService:
         deadline_to: str | None = None,
         min_value: float | None = None,
         max_value: float | None = None,
+        country: str | None = None,
         limit: int = 20,
         offset: int = 0,
         order_by: Literal["score", "published_at", "deadline_at", "estimated_value"] = "score",
         order: Literal["asc", "desc"] = "desc",
+        query_mode: Literal["keyword", "semantic", "hybrid"] = "keyword",
         refresh_sources: bool = False,
     ) -> dict[str, Any]:
         """Search tenders from local storage, optionally refreshing sources first."""
 
-        filters = self._build_filters(
-            text=text,
-            cpv_codes=cpv_codes,
-            nuts_codes=nuts_codes,
-            regions=regions,
-            buyer=buyer,
-            statuses=statuses,
-            sources=sources,
-            procedure_types=procedure_types,
-            contract_types=contract_types,
-            notice_types=notice_types,
-            only_open=only_open,
-            published_from=published_from,
-            published_to=published_to,
-            deadline_from=deadline_from,
-            deadline_to=deadline_to,
-            min_value=min_value,
-            max_value=max_value,
-            limit=limit,
-            offset=offset,
-            order_by=order_by,
-            order=order,
-        )
+        try:
+            filters = self._build_filters(
+                text=text,
+                cpv_codes=cpv_codes,
+                nuts_codes=nuts_codes,
+                regions=regions,
+                buyer=buyer,
+                statuses=statuses,
+                sources=sources,
+                procedure_types=procedure_types,
+                contract_types=contract_types,
+                notice_types=notice_types,
+                only_open=only_open,
+                published_from=published_from,
+                published_to=published_to,
+                deadline_from=deadline_from,
+                deadline_to=deadline_to,
+                min_value=min_value,
+                max_value=max_value,
+                country=country,
+                limit=limit,
+                offset=offset,
+                order_by=order_by,
+                order=order,
+                query_mode=query_mode,
+            )
+        except (ValidationError, ValueError) as exc:
+            return _invalid_filters_response(exc, collection="results")
         if refresh_sources:
             await self.ingestor.ingest_for_filters(filters)
-        results = await self.database.search_tenders(filters)
+        if query_mode in ("semantic", "hybrid") and filters.text:
+            embedding, provider, model = await self._embed_query(filters.text)
+            if not embedding:
+                if query_mode == "semantic":
+                    return _search_error_response(
+                        filters,
+                        error="embeddings_disabled",
+                        message="No embedding provider configured.",
+                    )
+                results = await self.database.search_tenders(filters)
+                return _search_response(filters, results)
+            if not await _database_pgvector_available(self.database):
+                if query_mode == "semantic":
+                    return _search_error_response(
+                        filters,
+                        error="pgvector_unavailable",
+                        message="pgvector extension is not available in this database.",
+                    )
+                results = await self.database.search_tenders(filters)
+                return _search_response(filters, results)
+            if query_mode == "semantic":
+                pairs = await self.database.semantic_search_tenders(
+                    query_embedding=embedding,
+                    top_k=filters.limit + filters.offset,
+                    filters=filters,
+                    provider=provider,
+                    model=model,
+                )
+                pairs = pairs[filters.offset : filters.offset + filters.limit]
+                results = [
+                    TenderSearchResult(
+                        tender=tender,
+                        score=max(0.0, round(1.0 - distance, 4)),
+                        reasons=["semantic_match"],
+                    )
+                    for tender, distance in pairs
+                ]
+            else:
+                results = await self.database.hybrid_search(
+                    filters,
+                    query_embedding=embedding,
+                    provider=provider,
+                    model=model,
+                    top_k=filters.limit + filters.offset,
+                )
+        else:
+            results = await self.database.search_tenders(filters)
+        return _search_response(filters, results)
+
+    async def _embed_query(self, query: str) -> tuple[list[float], str | None, str | None]:
+        """Embed a query string using the configured embedder; returns [] when disabled."""
+
+        from licitaciones_mcp.embeddings.base import NullEmbedder
+        from licitaciones_mcp.embeddings.factory import build_embedder
+
+        embedder = build_embedder(self.settings)
+        if isinstance(embedder, NullEmbedder):
+            return [], None, None
+        vectors = await embedder.embed([query])
+        return (vectors[0], embedder.provider, embedder.model) if vectors else ([], None, None)
+
+    async def semantic_search_tenders(self, *, text: str, top_k: int = 10) -> dict[str, Any]:
+        """Find tenders semantically close to ``text``."""
+
+        embedding, provider, model = await self._embed_query(text)
+        if not embedding:
+            return {
+                "count": 0,
+                "results": [],
+                "error": "embeddings_disabled",
+                "message": "No embedding provider configured.",
+            }
+        if not await _database_pgvector_available(self.database):
+            return {
+                "count": 0,
+                "results": [],
+                "error": "pgvector_unavailable",
+                "message": "pgvector extension is not available in this database.",
+            }
+        pairs = await self.database.semantic_search_tenders(
+            query_embedding=embedding,
+            top_k=top_k,
+            provider=provider,
+            model=model,
+        )
         return {
-            "count": len(results),
-            "filters": filters.model_dump(mode="json"),
+            "count": len(pairs),
             "results": [
                 {
-                    "tender": PublicTender.from_tender(result.tender).model_dump(mode="json"),
-                    "score": result.score,
-                    "reasons": result.reasons,
+                    "tender": PublicTender.from_tender(tender).model_dump(mode="json"),
+                    "distance": distance,
                 }
-                for result in results
+                for tender, distance in pairs
             ],
         }
 
@@ -137,6 +232,52 @@ class TenderToolService:
 
         cpv_codes = await self.database.search_cpv_codes(text=text, limit=limit)
         return {"count": len(cpv_codes), "cpv_codes": cpv_codes}
+
+    async def list_source_runs(
+        self,
+        *,
+        source: str | None = None,
+        status: str | None = None,
+        limit: int = 20,
+    ) -> dict[str, Any]:
+        """List recent source fetch and ingestion attempts."""
+
+        source_filter: TenderSource | None = None
+        if source:
+            try:
+                source_filter = _parse_source(source)
+            except ValueError:
+                return {
+                    "error": "invalid_source",
+                    "message": f"Unsupported source: {source}",
+                    "count": 0,
+                    "runs": [],
+                }
+        status_filter: SourceFetchRunStatus | None = None
+        if status:
+            try:
+                status_filter = SourceFetchRunStatus(status.lower())
+            except ValueError:
+                return {
+                    "error": "invalid_status",
+                    "message": f"Unsupported source run status: {status}",
+                    "count": 0,
+                    "runs": [],
+                }
+        runs = await self.database.list_source_fetch_runs(
+            source=source_filter,
+            status=status_filter,
+            limit=limit,
+        )
+        return {"count": len(runs), "runs": [run.model_dump(mode="json") for run in runs]}
+
+    async def get_source_run(self, *, run_id: str) -> dict[str, Any]:
+        """Return one source fetch and ingestion attempt."""
+
+        run = await self.database.get_source_fetch_run(run_id)
+        if run is None:
+            return {"error": "not_found", "message": f"Source run not found: {run_id}"}
+        return {"run": run.model_dump(mode="json")}
 
     async def ingest_source_period(
         self,
@@ -184,22 +325,26 @@ class TenderToolService:
         sources: list[str] | None = None,
         only_open: bool = True,
         hour_utc: int = 7,
+        cron: str | None = None,
         limit: int = 50,
     ) -> dict[str, Any]:
         """Create or replace a daily tender search job."""
 
-        filters = self._build_filters(
-            text=text,
-            cpv_codes=cpv_codes,
-            regions=regions,
-            buyer=buyer,
-            statuses=statuses,
-            sources=sources,
-            only_open=only_open,
-            limit=limit,
-        )
+        try:
+            filters = self._build_filters(
+                text=text,
+                cpv_codes=cpv_codes,
+                regions=regions,
+                buyer=buyer,
+                statuses=statuses,
+                sources=sources,
+                only_open=only_open,
+                limit=limit,
+            )
+        except (ValidationError, ValueError) as exc:
+            return _invalid_filters_response(exc)
         job = await self.database.create_daily_job(
-            DailyJob(name=name, filters=filters, hour_utc=hour_utc)
+            DailyJob(name=name, filters=filters, hour_utc=hour_utc, cron=cron)
         )
         return {"job": job.model_dump(mode="json")}
 
@@ -265,6 +410,52 @@ class TenderToolService:
             refresh_sources=refresh_sources,
         )
 
+    async def export_tender_ocds(self, *, tender_id: str) -> dict[str, Any]:
+        """Export a single tender as an OCDS release package."""
+
+        from licitaciones_mcp.ocds import build_release_package, tender_to_release
+
+        tender = await self.database.get_tender(tender_id)
+        if tender is None:
+            return {"error": "not_found", "message": f"Tender not found: {tender_id}"}
+        release = tender_to_release(tender)
+        return build_release_package([release])
+
+    async def get_tender_document(self, *, document_id: str) -> dict[str, Any]:
+        """Return a parsed tender document (text + sections)."""
+
+        record = await self.database.get_tender_document(document_id)
+        if record is None:
+            return {"error": "not_found", "message": f"Document not found: {document_id}"}
+        return record
+
+    async def export_search_ocds(
+        self,
+        *,
+        text: str | None = None,
+        cpv_codes: list[str] | None = None,
+        regions: list[str] | None = None,
+        only_open: bool = False,
+        limit: int = 50,
+    ) -> dict[str, Any]:
+        """Export search results as an OCDS release package."""
+
+        from licitaciones_mcp.ocds import build_release_package, tender_to_release
+
+        try:
+            filters = self._build_filters(
+                text=text,
+                cpv_codes=cpv_codes,
+                regions=regions,
+                only_open=only_open,
+                limit=limit,
+            )
+        except (ValidationError, ValueError) as exc:
+            return _invalid_filters_response(exc)
+        results = await self.database.search_tenders(filters)
+        releases = [tender_to_release(item.tender) for item in results]
+        return build_release_package(releases)
+
     def _build_filters(
         self,
         *,
@@ -285,10 +476,12 @@ class TenderToolService:
         deadline_to: str | None = None,
         min_value: float | None = None,
         max_value: float | None = None,
+        country: str | None = None,
         limit: int = 20,
         offset: int = 0,
         order_by: Literal["score", "published_at", "deadline_at", "estimated_value"] = "score",
         order: Literal["asc", "desc"] = "desc",
+        query_mode: Literal["keyword", "semantic", "hybrid"] = "keyword",
     ) -> TenderFilters:
         return TenderFilters(
             text=normalize_text(text),
@@ -308,10 +501,12 @@ class TenderToolService:
             deadline_to=parse_date(deadline_to),
             min_value=min_value,
             max_value=max_value,
-            limit=max(1, min(limit, 500)),
-            offset=max(0, offset),
+            country=country,
+            limit=max(1, min(limit, MAX_TENDER_SEARCH_LIMIT)),
+            offset=max(0, min(offset, MAX_TENDER_SEARCH_OFFSET)),
             order_by=order_by,
             order=order,
+            query_mode=query_mode,
         )
 
 
@@ -325,6 +520,71 @@ def _parse_statuses(values: list[str] | None) -> list[TenderStatus]:
         if status not in result:
             result.append(status)
     return result
+
+
+def _search_response(
+    filters: TenderFilters,
+    results: list[TenderSearchResult],
+) -> dict[str, Any]:
+    return {
+        "count": len(results),
+        "filters": filters.model_dump(mode="json"),
+        "results": [
+            {
+                "tender": PublicTender.from_tender(result.tender).model_dump(mode="json"),
+                "score": result.score,
+                "reasons": result.reasons,
+            }
+            for result in results
+        ],
+    }
+
+
+def _search_error_response(filters: TenderFilters, *, error: str, message: str) -> dict[str, Any]:
+    return {
+        "count": 0,
+        "filters": filters.model_dump(mode="json"),
+        "results": [],
+        "error": error,
+        "message": message,
+    }
+
+
+def _invalid_filters_response(
+    exc: ValidationError | ValueError,
+    *,
+    collection: str | None = None,
+) -> dict[str, Any]:
+    response: dict[str, Any] = {
+        "error": "invalid_filters",
+        "message": "Invalid tender filters.",
+        "details": _validation_error_details(exc),
+    }
+    if collection is not None:
+        response["count"] = 0
+        response[collection] = []
+    return response
+
+
+def _validation_error_details(exc: ValidationError | ValueError) -> list[dict[str, Any]]:
+    if not isinstance(exc, ValidationError):
+        return [{"type": exc.__class__.__name__, "message": str(exc)}]
+
+    details: list[dict[str, Any]] = []
+    for item in exc.errors(include_context=False, include_input=False, include_url=False):
+        detail = dict(item)
+        loc = item.get("loc")
+        if loc is not None:
+            detail["loc"] = list(loc)
+        details.append(detail)
+    return details
+
+
+async def _database_pgvector_available(database: Any) -> bool:
+    checker = getattr(database, "pgvector_available", None)
+    if checker is None:
+        return True
+    return bool(await checker())
 
 
 def _parse_source(value: str) -> TenderSource:

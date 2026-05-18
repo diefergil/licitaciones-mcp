@@ -33,6 +33,7 @@ The server layer owns runtime integration:
 
 - Postgres persistence
 - daily jobs and job runs
+- source fetch run history
 - optional embedding providers
 - MCP tool handlers
 - CLI commands

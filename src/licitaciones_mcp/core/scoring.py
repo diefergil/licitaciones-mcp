@@ -32,6 +32,8 @@ def tender_matches_filters(tender: Tender, filters: TenderFilters) -> bool:
         return False
     if filters.sources and tender.source not in filters.sources:
         return False
+    if filters.country and tender.country.upper() != filters.country:
+        return False
 
     wanted_cpvs = normalize_cpv_codes(filters.cpv_codes)
     if wanted_cpvs and not _cpv_overlaps(tender.cpv_codes, wanted_cpvs):

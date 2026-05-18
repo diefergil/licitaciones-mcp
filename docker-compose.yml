@@ -15,6 +15,20 @@ services:
       timeout: 5s
       retries: 20
 
+  migrate:
+    build: .
+    env_file:
+      - path: .env.example
+        required: true
+      - path: .env
+        required: false
+    environment:
+      DATABASE_URL: postgresql+asyncpg://licitaciones:${POSTGRES_PASSWORD:-change-me-before-deploy}@postgres:5432/licitaciones
+    depends_on:
+      postgres:
+        condition: service_healthy
+    command: ["licitaciones-mcp", "init-db"]
+
   mcp:
     build: .
     env_file:
@@ -29,7 +43,25 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
-    command: ["sh", "-c", "licitaciones-mcp init-db && licitaciones-mcp serve-mcp --host 0.0.0.0 --port 8080"]
+      migrate:
+        condition: service_completed_successfully
+    command: ["licitaciones-mcp", "serve-mcp", "--host", "0.0.0.0", "--port", "8080"]
+
+  scheduler:
+    build: .
+    env_file:
+      - path: .env.example
+        required: true
+      - path: .env
+        required: false
+    environment:
+      DATABASE_URL: postgresql+asyncpg://licitaciones:${POSTGRES_PASSWORD:-change-me-before-deploy}@postgres:5432/licitaciones
+    depends_on:
+      postgres:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    command: ["licitaciones-mcp", "scheduler", "run"]
 
 volumes:
   postgres-data:

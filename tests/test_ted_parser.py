@@ -28,3 +28,10 @@ def test_build_ted_search_payload_uses_limit_cap() -> None:
     assert payload["scope"] == "ALL"
     assert "solar" in payload["query"]
     assert "classification-cpv=09332000" in payload["query"]
+
+
+def test_build_ted_search_payload_uses_country_filter() -> None:
+    payload = build_ted_search_payload(TenderFilters(text="energia", country="FRA"))
+
+    assert "buyer-country=FRA" in payload["query"]
+    assert TenderFilters(country="FRA").country == "FR"
