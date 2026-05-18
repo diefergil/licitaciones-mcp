@@ -134,6 +134,29 @@ async def test_source_fetch_run_records_failure(database: TenderDatabase) -> Non
     assert failed.error == "network error"
 
 
+async def test_source_fetch_run_normalizes_string_sources(database: TenderDatabase) -> None:
+    """String source inputs should be normalized before persisting."""
+
+    started = await database.start_source_fetch_run(
+        source="PLACSP",
+        operation="period",
+    )
+
+    assert started.source == TenderSource.PLACSP
+    listed = await database.list_source_fetch_runs(source="PLACSP")
+    assert [run.id for run in listed] == [started.id]
+
+
+async def test_source_fetch_run_rejects_invalid_source(database: TenderDatabase) -> None:
+    """Invalid source fetch sources should fail before they reach storage."""
+
+    with pytest.raises(ValueError, match="Invalid source fetch run source"):
+        await database.start_source_fetch_run(
+            source="unknown",
+            operation="period",
+        )
+
+
 async def test_source_fetch_run_rejects_invalid_status(database: TenderDatabase) -> None:
     """Invalid source fetch statuses should fail before they reach storage."""
 

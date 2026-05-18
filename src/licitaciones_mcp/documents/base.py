@@ -23,6 +23,8 @@ class DocumentParser(Protocol):
 
     def supports(self, *, content_type: str | None, url: str) -> bool:
         """Return ``True`` if this parser can handle the document."""
+        ...
 
     def parse(self, data: bytes, *, url: str) -> ParsedDocument:
         """Extract text + sections from raw bytes."""
+        ...

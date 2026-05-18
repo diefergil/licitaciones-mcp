@@ -117,7 +117,7 @@ class TenderDatabase:
 
         run_id = new_id()
         started_at = datetime.now(UTC)
-        source_value = source.value if isinstance(source, TenderSource) else str(source)
+        source_value = _source_fetch_run_source_value(source)
         record = SourceFetchRunRecord(
             id=run_id,
             source=source_value,
@@ -186,7 +186,7 @@ class TenderDatabase:
                 SourceFetchRunRecord.started_at.desc()
             )
             if source is not None:
-                source_value = source.value if isinstance(source, TenderSource) else str(source)
+                source_value = _source_fetch_run_source_value(source)
                 statement = statement.where(SourceFetchRunRecord.source == source_value)
             if status is not None:
                 status_value = _source_fetch_run_status_value(status)
@@ -1124,6 +1124,17 @@ def _sanitize_error(error: str | None) -> str | None:
     if not error:
         return None
     return " ".join(str(error).split())[:2000]
+
+
+def _source_fetch_run_source_value(source: TenderSource | str) -> str:
+    """Normalize a source fetch run source before it reaches storage."""
+
+    if isinstance(source, TenderSource):
+        return source.value
+    try:
+        return TenderSource(str(source).lower()).value
+    except ValueError as exc:
+        raise ValueError(f"Invalid source fetch run source: {source}") from exc
 
 
 def _source_fetch_run_status_value(status: SourceFetchRunStatus | str) -> str:
