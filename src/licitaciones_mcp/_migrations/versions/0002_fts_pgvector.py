@@ -14,6 +14,7 @@ from collections.abc import Sequence
 
 import sqlalchemy as sa
 from alembic import op
+from sqlalchemy.dialects import postgresql
 
 revision: str = "0002_fts_pgvector"
 down_revision: str | None = "0001_baseline"
@@ -46,10 +47,15 @@ def upgrade() -> None:
         """
     )
 
-    op.execute(
-        "ALTER TABLE tenders ADD COLUMN search_vector tsvector "
-        f"GENERATED ALWAYS AS ({_SEARCH_VECTOR_EXPR}) STORED"
-    )
+    if not _column_exists("tenders", "search_vector"):
+        op.add_column(
+            "tenders",
+            sa.Column(
+                "search_vector",
+                postgresql.TSVECTOR(),
+                sa.Computed(_SEARCH_VECTOR_EXPR, persisted=True),
+            ),
+        )
     op.execute(
         "CREATE INDEX IF NOT EXISTS idx_tenders_search_vector ON tenders USING GIN (search_vector)"
     )
@@ -102,3 +108,10 @@ def downgrade() -> None:
     op.execute("DROP INDEX IF EXISTS idx_tenders_search_vector")
     op.execute("ALTER TABLE tenders DROP COLUMN IF EXISTS search_vector")
     # Extensions are left in place — other tables may depend on them.
+
+
+def _column_exists(table_name: str, column_name: str) -> bool:
+    """Return whether ``table_name.column_name`` exists in the current schema."""
+
+    inspector = sa.inspect(op.get_bind())
+    return any(column["name"] == column_name for column in inspector.get_columns(table_name))

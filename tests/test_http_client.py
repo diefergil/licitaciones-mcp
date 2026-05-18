@@ -63,6 +63,30 @@ async def test_client_gives_up_after_max_attempts() -> None:
 
 
 @pytest.mark.asyncio
+async def test_retryable_status_responses_are_closed_between_attempts() -> None:
+    """Retry responses should release their connection before the next attempt."""
+
+    responses: list[httpx.Response] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        response = httpx.Response(503, text="unavailable", request=request)
+        responses.append(response)
+        return response
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as raw_client:
+        with pytest.raises(httpx.HTTPStatusError):
+            await http_client_module.request_with_retries(
+                raw_client,
+                "GET",
+                "https://example.test/x",
+                max_attempts=2,
+            )
+
+    assert len(responses) == 2
+    assert all(response.is_closed for response in responses)
+
+
+@pytest.mark.asyncio
 async def test_client_streams_without_prebuffering_response() -> None:
     """The retrying client exposes a streaming response context."""
 

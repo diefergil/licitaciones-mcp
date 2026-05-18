@@ -244,6 +244,7 @@ async def request_with_retries(
                 await limiter.acquire(target_host)
             response = await client.request(method, url, **kwargs)  # type: ignore[arg-type]
             if response.status_code in _RETRYABLE_STATUS:
+                await response.aclose()
                 raise _RetryableStatus(response)
             return response
 
