@@ -439,7 +439,13 @@ def embeddings_backfill(
             if not tenders:
                 break
             vectors = await embedder.embed([_embedding_input(t) for t in tenders])
-            items = list(zip([t.id for t in tenders], vectors, strict=False))
+            if len(vectors) != len(tenders):
+                console.print(
+                    "[yellow]Embedding provider returned a mismatched vector count; "
+                    "skipping this batch.[/yellow]"
+                )
+                break
+            items = list(zip([t.id for t in tenders], vectors, strict=True))
             written = await database.upsert_embeddings(
                 provider=embedder.provider, model=embedder.model, items=items
             )

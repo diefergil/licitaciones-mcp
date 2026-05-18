@@ -70,7 +70,14 @@ class SourceIngestor:
         except Exception as exc:  # noqa: BLE001 -- embedding failure must not break ingest
             _log.warning("embedding_failed", error=str(exc), count=len(inputs))
             return ids
-        items = list(zip(ids, vectors, strict=False))
+        if len(vectors) != len(ids):
+            _log.warning(
+                "embedding_count_mismatch",
+                tender_count=len(ids),
+                vector_count=len(vectors),
+            )
+            return ids
+        items = list(zip(ids, vectors, strict=True))
         written = await self.database.upsert_embeddings(
             provider=self.embedder.provider,
             model=self.embedder.model,

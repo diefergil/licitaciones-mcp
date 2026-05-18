@@ -2,8 +2,14 @@
 
 from __future__ import annotations
 
+from apscheduler.triggers.cron import CronTrigger
+
 from licitaciones_mcp.jobs.scheduler import _trigger_for
 from licitaciones_mcp.storage.models import DailyJobRecord
+
+
+def _cron_field_value(trigger: CronTrigger, name: str) -> str:
+    return next(str(field) for field in trigger.fields if field.name == name)
 
 
 def test_trigger_for_hourly_daily_job() -> None:
@@ -15,7 +21,10 @@ def test_trigger_for_hourly_daily_job() -> None:
         enabled=True,
     )
 
-    assert str(_trigger_for(record)) == "cron[hour='8', minute='0']"
+    trigger = _trigger_for(record)
+
+    assert _cron_field_value(trigger, "hour") == "8"
+    assert _cron_field_value(trigger, "minute") == "0"
 
 
 def test_trigger_for_cron_job() -> None:

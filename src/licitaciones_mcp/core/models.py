@@ -93,7 +93,10 @@ class Tender(BaseModel):
     @field_validator("country", mode="before")
     @classmethod
     def _normalize_country(cls, value: str | None) -> str:
-        return normalize_country_code(value) or "XX"
+        try:
+            return normalize_country_code(value) or "XX"
+        except ValueError:
+            return "XX"
 
     @property
     def source_id(self) -> str:

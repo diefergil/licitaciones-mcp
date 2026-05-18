@@ -90,3 +90,9 @@ def test_country_filter_uses_normalized_iso2_codes() -> None:
     assert tender.country == "FR"
     assert tender_matches_filters(tender, TenderFilters(country="FR")) is True
     assert tender_matches_filters(tender, TenderFilters(country="ES")) is False
+
+
+def test_tender_unknown_country_falls_back_to_sentinel() -> None:
+    tender = Tender(source=TenderSource.TED, external_id="1", title="Supply", country="Atlantis")
+
+    assert tender.country == "XX"
