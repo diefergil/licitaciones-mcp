@@ -77,16 +77,30 @@ async def test_hybrid_merges_keyword_and_vector(database: TenderDatabase) -> Non
                         "dimensions": 3,
                         "embedding": [0.0, 1.0, 0.0],
                     },
+                    {
+                        "tender_id": ids[0],
+                        "provider": "other",
+                        "model": "fake",
+                        "dimensions": 3,
+                        "embedding": [0.0, 1.0, 0.0],
+                    },
                 ]
             )
         )
         await session.commit()
 
-    semantic = await database.semantic_search_tenders(query_embedding=[0.0, 1.0, 0.0], top_k=2)
+    semantic = await database.semantic_search_tenders(
+        query_embedding=[0.0, 1.0, 0.0],
+        top_k=2,
+        provider="test",
+        model="fake",
+    )
     assert semantic[0][0].external_id == "h2"
 
     hybrid = await database.hybrid_search(
         TenderFilters(text="limpieza", limit=10),
         query_embedding=[0.0, 1.0, 0.0],
+        provider="test",
+        model="fake",
     )
     assert hybrid[0].tender.external_id == "h2"

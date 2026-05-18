@@ -9,6 +9,7 @@ from sqlalchemy import String, bindparam, delete, or_, select, text
 from sqlalchemy.dialects.postgresql import ARRAY
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import (
+    AsyncConnection,
     AsyncEngine,
     AsyncSession,
     async_sessionmaker,
@@ -48,6 +49,13 @@ from licitaciones_mcp.storage.models import (
     new_id,
 )
 
+_SEARCH_VECTOR_EXPR = (
+    "to_tsvector('spanish', "
+    "coalesce(title, '') || ' ' || "
+    "coalesce(summary, '') || ' ' || "
+    "coalesce(buyer_name, ''))"
+)
+
 
 class TenderDatabase:
     """Repository and schema lifecycle for the local application database."""
@@ -81,6 +89,7 @@ class TenderDatabase:
 
         async with self.engine.begin() as conn:
             await conn.run_sync(Base.metadata.create_all)
+            await _ensure_postgres_search_features(conn)
 
     async def close(self) -> None:
         """Dispose database connections."""
@@ -417,6 +426,8 @@ class TenderDatabase:
         query_embedding: list[float],
         top_k: int = 50,
         filters: TenderFilters | None = None,
+        provider: str | None = None,
+        model: str | None = None,
     ) -> list[tuple[Tender, float]]:
         """Return tenders ranked by cosine distance to ``query_embedding``.
 
@@ -432,11 +443,24 @@ class TenderDatabase:
             "SELECT t.id, (e.embedding::text)::vector <=> (:__emb)::vector AS distance "
             "FROM tenders t "
             "JOIN tender_embeddings e ON e.tender_id = t.id "
+            "WHERE e.dimensions = :__dim "
+            "AND (:__provider IS NULL OR e.provider = :__provider) "
+            "AND (:__model IS NULL OR e.model = :__model) "
             "ORDER BY distance ASC "
             "LIMIT :__k"
         )
         async with self.session_factory() as session:
-            rows = (await session.execute(text(sql).bindparams(__emb=literal, __k=top_k))).all()
+            rows = (
+                await session.execute(
+                    text(sql).bindparams(
+                        __emb=literal,
+                        __k=top_k,
+                        __dim=len(query_embedding),
+                        __provider=provider,
+                        __model=model,
+                    )
+                )
+            ).all()
             if not rows:
                 return []
             ids = [row[0] for row in rows]
@@ -457,6 +481,8 @@ class TenderDatabase:
         filters: TenderFilters,
         *,
         query_embedding: list[float] | None,
+        provider: str | None = None,
+        model: str | None = None,
         rrf_k: int = 60,
         top_k: int = 100,
     ) -> list[TenderSearchResult]:
@@ -471,7 +497,11 @@ class TenderDatabase:
         if not query_embedding:
             return keyword
         semantic = await self.semantic_search_tenders(
-            query_embedding=query_embedding, top_k=top_k, filters=filters
+            query_embedding=query_embedding,
+            top_k=top_k,
+            filters=filters,
+            provider=provider,
+            model=model,
         )
         rrf: dict[str, float] = {}
         tenders: dict[str, Tender] = {}
@@ -853,6 +883,48 @@ def _tender_identifier_clause(identifier: str) -> Any:
         (TenderRecord.id == identifier)
         | (TenderRecord.external_id == identifier)
         | (TenderRecord.dedupe_key == identifier)
+    )
+
+
+async def _ensure_postgres_search_features(conn: AsyncConnection) -> None:
+    """Create Postgres-only search helpers used by the query layer."""
+
+    await conn.execute(text("CREATE EXTENSION IF NOT EXISTS pg_trgm"))
+    await conn.execute(
+        text(
+            """
+            DO $$
+            BEGIN
+                CREATE EXTENSION IF NOT EXISTS vector;
+            EXCEPTION
+                WHEN undefined_file THEN
+                    RAISE NOTICE 'pgvector extension is not available; semantic search requires pgvector';
+            END
+            $$;
+            """
+        )
+    )
+    await conn.execute(
+        text(
+            "ALTER TABLE tenders ADD COLUMN IF NOT EXISTS search_vector tsvector "
+            f"GENERATED ALWAYS AS ({_SEARCH_VECTOR_EXPR}) STORED"
+        )
+    )
+    await conn.execute(
+        text(
+            "CREATE INDEX IF NOT EXISTS idx_tenders_search_vector ON tenders USING GIN (search_vector)"
+        )
+    )
+    await conn.execute(
+        text(
+            "CREATE INDEX IF NOT EXISTS idx_tenders_title_trgm ON tenders USING GIN (title gin_trgm_ops)"
+        )
+    )
+    await conn.execute(
+        text(
+            "CREATE INDEX IF NOT EXISTS idx_tenders_buyer_trgm "
+            "ON tenders USING GIN (buyer_name gin_trgm_ops)"
+        )
     )
 
 

@@ -17,6 +17,7 @@ from typing import Any, TypeVar, cast
 from alembic import command
 from alembic.config import Config
 from sqlalchemy import text
+from sqlalchemy.exc import ProgrammingError
 from sqlalchemy.ext.asyncio import create_async_engine
 
 from licitaciones_mcp.config import Settings, get_settings
@@ -63,7 +64,13 @@ async def _current_async(database_url: str) -> str | None:
     engine = create_async_engine(database_url)
     try:
         async with engine.connect() as conn:
-            row = (await conn.execute(text("SELECT version_num FROM alembic_version"))).first()
+            try:
+                row = (await conn.execute(text("SELECT version_num FROM alembic_version"))).first()
+            except ProgrammingError as exc:
+                message = str(exc).lower()
+                if "alembic_version" in message or "undefinedtable" in message:
+                    return None
+                raise
             return str(row[0]) if row else None
     finally:
         await engine.dispose()

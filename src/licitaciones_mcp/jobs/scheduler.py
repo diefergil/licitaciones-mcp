@@ -62,18 +62,24 @@ class TenderScheduler:
             if not record.enabled:
                 continue
             sig = (record.cron, record.hour_utc, record.enabled)
-            active[record.id] = sig
             if self._known_signatures.get(record.id) == sig:
+                active[record.id] = sig
                 continue
-            if self.scheduler.get_job(record.id) is not None:
-                self.scheduler.remove_job(record.id)
-            self.scheduler.add_job(
-                self._run_job,
-                trigger=_trigger_for(record),
-                id=record.id,
-                args=[record.id],
-                replace_existing=True,
-            )
+            try:
+                trigger = _trigger_for(record)
+                if self.scheduler.get_job(record.id) is not None:
+                    self.scheduler.remove_job(record.id)
+                self.scheduler.add_job(
+                    self._run_job,
+                    trigger=trigger,
+                    id=record.id,
+                    args=[record.id],
+                    replace_existing=True,
+                )
+            except Exception as exc:  # noqa: BLE001
+                _log.warning("scheduled_job_config_invalid", job_id=record.id, error=str(exc))
+                continue
+            active[record.id] = sig
         # Remove jobs that disappeared or got disabled.
         for job_id in list(self._known_signatures):
             if job_id not in active and self.scheduler.get_job(job_id) is not None:

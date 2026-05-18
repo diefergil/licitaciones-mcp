@@ -9,6 +9,7 @@ from licitaciones_mcp.core.models import (
     DailyJob,
     PublicTender,
     TenderFilters,
+    TenderSearchResult,
     TenderSource,
     TenderStatus,
 )
@@ -85,33 +86,48 @@ class TenderToolService:
         if refresh_sources:
             await self.ingestor.ingest_for_filters(filters)
         if query_mode in ("semantic", "hybrid") and filters.text:
-            embedding = await self._embed_query(filters.text)
+            embedding, provider, model = await self._embed_query(filters.text)
+            if not embedding:
+                if query_mode == "semantic":
+                    return {
+                        "count": 0,
+                        "filters": filters.model_dump(mode="json"),
+                        "results": [],
+                        "error": "embeddings_disabled",
+                        "message": "No embedding provider configured.",
+                    }
+                results = await self.database.search_tenders(filters)
+                return _search_response(filters, results)
             if query_mode == "semantic":
                 pairs = await self.database.semantic_search_tenders(
-                    query_embedding=embedding, top_k=filters.limit, filters=filters
+                    query_embedding=embedding,
+                    top_k=filters.limit + filters.offset,
+                    filters=filters,
+                    provider=provider,
+                    model=model,
                 )
+                pairs = pairs[filters.offset : filters.offset + filters.limit]
                 results = [
-                    type("R", (), {"tender": t, "score": 1.0 - d, "reasons": ["semantic"]})()
-                    for t, d in pairs
+                    TenderSearchResult(
+                        tender=tender,
+                        score=max(0.0, round(1.0 - distance, 4)),
+                        reasons=["semantic_match"],
+                    )
+                    for tender, distance in pairs
                 ]
             else:
-                results = await self.database.hybrid_search(filters, query_embedding=embedding)
+                results = await self.database.hybrid_search(
+                    filters,
+                    query_embedding=embedding,
+                    provider=provider,
+                    model=model,
+                    top_k=filters.limit + filters.offset,
+                )
         else:
             results = await self.database.search_tenders(filters)
-        return {
-            "count": len(results),
-            "filters": filters.model_dump(mode="json"),
-            "results": [
-                {
-                    "tender": PublicTender.from_tender(result.tender).model_dump(mode="json"),
-                    "score": result.score,
-                    "reasons": result.reasons,
-                }
-                for result in results
-            ],
-        }
+        return _search_response(filters, results)
 
-    async def _embed_query(self, query: str) -> list[float]:
+    async def _embed_query(self, query: str) -> tuple[list[float], str | None, str | None]:
         """Embed a query string using the configured embedder; returns [] when disabled."""
 
         from licitaciones_mcp.embeddings.base import NullEmbedder
@@ -119,14 +135,14 @@ class TenderToolService:
 
         embedder = build_embedder(self.settings)
         if isinstance(embedder, NullEmbedder):
-            return []
+            return [], None, None
         vectors = await embedder.embed([query])
-        return vectors[0] if vectors else []
+        return (vectors[0], embedder.provider, embedder.model) if vectors else ([], None, None)
 
     async def semantic_search_tenders(self, *, text: str, top_k: int = 10) -> dict[str, Any]:
         """Find tenders semantically close to ``text``."""
 
-        embedding = await self._embed_query(text)
+        embedding, provider, model = await self._embed_query(text)
         if not embedding:
             return {
                 "count": 0,
@@ -134,7 +150,12 @@ class TenderToolService:
                 "error": "embeddings_disabled",
                 "message": "No embedding provider configured.",
             }
-        pairs = await self.database.semantic_search_tenders(query_embedding=embedding, top_k=top_k)
+        pairs = await self.database.semantic_search_tenders(
+            query_embedding=embedding,
+            top_k=top_k,
+            provider=provider,
+            model=model,
+        )
         return {
             "count": len(pairs),
             "results": [
@@ -445,6 +466,24 @@ def _parse_statuses(values: list[str] | None) -> list[TenderStatus]:
         if status not in result:
             result.append(status)
     return result
+
+
+def _search_response(
+    filters: TenderFilters,
+    results: list[TenderSearchResult],
+) -> dict[str, Any]:
+    return {
+        "count": len(results),
+        "filters": filters.model_dump(mode="json"),
+        "results": [
+            {
+                "tender": PublicTender.from_tender(result.tender).model_dump(mode="json"),
+                "score": result.score,
+                "reasons": result.reasons,
+            }
+            for result in results
+        ],
+    }
 
 
 def _parse_source(value: str) -> TenderSource:
