@@ -42,6 +42,15 @@ cp .env.example .env
 docker compose up --build
 ```
 
+For internet-facing pilots, use the production overlay in `deploy/production/`.
+It keeps Postgres and MCP private and exposes only Caddy on 80/443:
+
+```bash
+cp deploy/production/.env.production.example .env
+# Replace every placeholder secret in .env before starting the public stack.
+docker compose -f docker-compose.yml -f deploy/production/docker-compose.override.yml up -d --build
+```
+
 ## Ingest Real PLACSP Data
 
 ```bash

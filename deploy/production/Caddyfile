@@ -1,0 +1,12 @@
+{$LICITACIONES_PUBLIC_HOST} {
+	encode zstd gzip
+
+	@allowed path /healthz /mcp /mcp/*
+	handle @allowed {
+		reverse_proxy mcp:8080
+	}
+
+	handle {
+		respond 404
+	}
+}
