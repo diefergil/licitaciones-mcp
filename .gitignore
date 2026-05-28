@@ -18,3 +18,9 @@ data/
 postgres-data/
 logs/
 tmp/
+
+# Local/private agent memory. AGENTS.md is the public repo guide; these files
+# are for checkout-specific context that must not be committed.
+AGENTS.local.md
+AGENTS.private.md
+AGENTS.override.md
