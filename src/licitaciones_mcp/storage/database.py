@@ -1249,7 +1249,7 @@ def _normalized_status_value(value: Any) -> TenderStatus:
 
 
 def _normalized_notice_facet_value(value: Any) -> str | None:
-    """Return canonical PLACSP notice codes without uppercasing legacy labels."""
+    """Return canonical PLACSP notice codes without uppercasing non-catalog labels."""
 
     normalized = _normalized_facet_value(value)
     if not normalized:

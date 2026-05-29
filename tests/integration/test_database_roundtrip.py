@@ -168,11 +168,13 @@ async def test_search_applies_prefix_filters_and_facets(database: TenderDatabase
     ]
 
 
-async def test_filter_options_tolerates_legacy_status_values(database: TenderDatabase) -> None:
-    """Status facets should not fail on legacy or unexpected stored strings."""
+async def test_filter_options_tolerates_noncanonical_source_status_values(
+    database: TenderDatabase,
+) -> None:
+    """Status facets should not fail on source-specific stored strings."""
 
-    open_tender = await _make_tender("legacy-open-status", "Legacy open status")
-    unknown_tender = await _make_tender("legacy-unknown-status", "Legacy unknown status")
+    open_tender = await _make_tender("source-open-status", "Source open status")
+    unknown_tender = await _make_tender("source-unknown-status", "Source unknown status")
     await database.upsert_tenders([open_tender, unknown_tender])
 
     async with database.session_factory() as session:
@@ -184,7 +186,7 @@ async def test_filter_options_tolerates_legacy_status_values(database: TenderDat
             {
                 "status": "OPEN",
                 "notice_type": "Publicada",
-                "external_id": "legacy-open-status",
+                "external_id": "source-open-status",
                 "source": TenderSource.PLACSP.value,
             },
         )
@@ -194,8 +196,8 @@ async def test_filter_options_tolerates_legacy_status_values(database: TenderDat
                 "WHERE external_id = :external_id AND source = :source"
             ),
             {
-                "status": "legacy-invalid",
-                "external_id": "legacy-unknown-status",
+                "status": "Estado no catalogado",
+                "external_id": "source-unknown-status",
                 "source": TenderSource.PLACSP.value,
             },
         )
