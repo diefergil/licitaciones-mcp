@@ -10,6 +10,7 @@ unit run.
 from __future__ import annotations
 
 import os
+import shutil
 import subprocess
 from collections.abc import AsyncIterator, Iterator
 from pathlib import Path
@@ -114,6 +115,9 @@ async def database(_database_url: str, _migrated_database: None) -> AsyncIterato
 
 def _ensure_postgres_image() -> None:
     """Build the local Postgres 18 BM25 image when it is not already present."""
+
+    if shutil.which("docker") is None:
+        pytest.skip("Docker CLI is required to build the Postgres 18 BM25 test image")
 
     inspect = subprocess.run(
         ["docker", "image", "inspect", _POSTGRES_IMAGE],

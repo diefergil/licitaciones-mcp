@@ -1294,7 +1294,7 @@ def _results_from_retrieval_order(
     reasons: list[str],
 ) -> list[TenderSearchResult]:
     results = [
-        TenderSearchResult(tender=tender, score=_rank_score(rank), reasons=reasons)
+        TenderSearchResult(tender=tender, score=_rank_score(rank), reasons=list(reasons))
         for rank, tender in enumerate(tenders, start=1)
         if tender_matches_filters(tender, filters)
     ]
@@ -1360,7 +1360,7 @@ def _bm25_score_sql() -> str:
 def _bm25_match_clause(query: str) -> TextClause:
     """Return a BM25 match predicate that excludes zero-score non-matches."""
 
-    return text(f"({_bm25_score_sql()}) < -0.0").bindparams(__q=query)
+    return text(f"({_bm25_score_sql()}) < 0.0").bindparams(__q=query)
 
 
 def _bm25_order_clause(query: str) -> TextClause:
