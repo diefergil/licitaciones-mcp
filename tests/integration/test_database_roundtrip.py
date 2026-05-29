@@ -5,6 +5,7 @@ from __future__ import annotations
 from datetime import UTC, datetime
 
 import pytest
+from sqlalchemy import text
 
 from licitaciones_mcp.core.models import (
     SourceFetchRunStatus,
@@ -165,6 +166,48 @@ async def test_search_applies_prefix_filters_and_facets(database: TenderDatabase
         {"value": "licitaciones", "label": "Licitaciones sin menores", "count": 1},
         {"value": "menores", "label": "Contratos menores", "count": 1},
     ]
+
+
+async def test_filter_options_tolerates_legacy_status_values(database: TenderDatabase) -> None:
+    """Status facets should not fail on legacy or unexpected stored strings."""
+
+    open_tender = await _make_tender("legacy-open-status", "Legacy open status")
+    unknown_tender = await _make_tender("legacy-unknown-status", "Legacy unknown status")
+    await database.upsert_tenders([open_tender, unknown_tender])
+
+    async with database.session_factory() as session:
+        await session.execute(
+            text(
+                "UPDATE tenders SET status = :status "
+                "WHERE external_id = :external_id AND source = :source"
+            ),
+            {
+                "status": "OPEN",
+                "external_id": "legacy-open-status",
+                "source": TenderSource.PLACSP.value,
+            },
+        )
+        await session.execute(
+            text(
+                "UPDATE tenders SET status = :status "
+                "WHERE external_id = :external_id AND source = :source"
+            ),
+            {
+                "status": "legacy-invalid",
+                "external_id": "legacy-unknown-status",
+                "source": TenderSource.PLACSP.value,
+            },
+        )
+        await session.commit()
+
+    facets = await database.list_filter_options(TenderFilters(), limit=10)
+
+    assert {"value": "open", "label": "Abierta", "count": 1} in facets["facets"]["statuses"]
+    assert {
+        "value": "unknown",
+        "label": "Desconocida",
+        "count": 1,
+    } in facets["facets"]["statuses"]
 
 
 async def test_upsert_embeddings_rejects_mixed_dimensions(database: TenderDatabase) -> None:

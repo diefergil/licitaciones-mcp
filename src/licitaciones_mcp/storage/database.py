@@ -57,6 +57,7 @@ from licitaciones_mcp.core.normalization import (
     fold_text,
     normalize_cpv_codes,
     normalize_cpv_prefixes,
+    normalize_status,
     normalize_text,
 )
 from licitaciones_mcp.core.quality import validate_tender
@@ -1159,9 +1160,7 @@ def _facet_counts(
     source_counts: Counter[str] = Counter()
 
     for row in rows:
-        status = normalize_text(str(row["status"]))
-        if status:
-            status_counts[status] += 1
+        status_counts[_normalized_status_value(row["status"]).value] += 1
         source = normalize_text(str(row["source"]))
         if source:
             source_counts[source] += 1
@@ -1235,6 +1234,18 @@ def _facet_counts(
             for value, count in _top_counter(source_counts, limit)
         ],
     }
+
+
+def _normalized_status_value(value: Any) -> TenderStatus:
+    """Return a resilient normalized status for facet labels."""
+
+    normalized = normalize_text(str(value)) if value is not None else None
+    if not normalized:
+        return TenderStatus.UNKNOWN
+    try:
+        return TenderStatus(normalized.lower())
+    except ValueError:
+        return normalize_status(normalized)
 
 
 def _facet_ranges(rows: Sequence[Mapping[str, Any]]) -> dict[str, dict[str, Any]]:
