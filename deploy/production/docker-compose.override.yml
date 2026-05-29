@@ -1,0 +1,40 @@
+services:
+  postgres:
+    restart: unless-stopped
+    ports: !override []
+
+  mcp:
+    restart: unless-stopped
+    ports: !override []
+    environment:
+      LICITACIONES_CACHE_DIR: /var/cache/licitaciones-mcp
+    volumes:
+      - source-cache:/var/cache/licitaciones-mcp
+
+  scheduler:
+    restart: unless-stopped
+    environment:
+      LICITACIONES_CACHE_DIR: /var/cache/licitaciones-mcp
+    volumes:
+      - source-cache:/var/cache/licitaciones-mcp
+
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    environment:
+      LICITACIONES_PUBLIC_HOST: ${LICITACIONES_PUBLIC_HOST:?LICITACIONES_PUBLIC_HOST is required}
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./deploy/production/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+    depends_on:
+      mcp:
+        condition: service_started
+
+volumes:
+  caddy-data:
+  caddy-config:
+  source-cache:
