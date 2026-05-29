@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections import Counter
+from collections.abc import Mapping, Sequence
 from datetime import UTC, datetime
 from typing import Any
 
@@ -17,6 +18,7 @@ from sqlalchemy.ext.asyncio import (
     create_async_engine,
 )
 from sqlalchemy.orm import selectinload
+from sqlalchemy.sql import Select
 from sqlalchemy.sql.elements import TextClause
 
 from licitaciones_mcp.config import SearchBackend, Settings, get_settings
@@ -841,7 +843,7 @@ class TenderDatabase:
         row_window = _FACET_ROW_WINDOW
         async with self.session_factory() as session:
             statement = self._apply_structured_filters(
-                select(TenderRecord),
+                _facet_select_statement(),
                 active_filters,
             )
             if active_filters.text:
@@ -852,17 +854,18 @@ class TenderDatabase:
             statement = statement.order_by(TenderRecord.published_at.desc().nullslast()).limit(
                 row_window
             )
-            records = (await session.execute(statement)).scalars().all()
+            rows: list[dict[str, Any]] = [
+                dict(row) for row in (await session.execute(statement)).mappings().all()
+            ]
 
-        tenders = [_record_to_tender(record, include_documents=False) for record in records]
         return {
-            "count": len(tenders),
+            "count": len(rows),
             "facet_row_window": row_window,
-            "truncated": len(tenders) == row_window,
+            "truncated": len(rows) == row_window,
             "filters": active_filters.model_dump(mode="json"),
             "catalogs": _static_filter_catalogs(),
-            "facets": _facet_counts(tenders, limit=facet_limit),
-            "ranges": _facet_ranges(tenders),
+            "facets": _facet_counts(rows, limit=facet_limit),
+            "ranges": _facet_ranges(rows),
         }
 
     async def create_daily_job(self, job: DailyJob) -> DailyJob:
@@ -1118,7 +1121,29 @@ def _static_filter_catalogs() -> dict[str, Any]:
     }
 
 
-def _facet_counts(tenders: list[Tender], *, limit: int) -> dict[str, list[dict[str, Any]]]:
+def _facet_select_statement() -> Select[tuple[Any, ...]]:
+    """Return the narrow row shape needed to compute local filter facets."""
+
+    return select(
+        TenderRecord.status.label("status"),
+        TenderRecord.source.label("source"),
+        TenderRecord.notice_type.label("notice_type"),
+        TenderRecord.contract_type.label("contract_type"),
+        TenderRecord.procedure_type.label("procedure_type"),
+        TenderRecord.cpv_codes.label("cpv_codes"),
+        TenderRecord.nuts_codes.label("nuts_codes"),
+        TenderRecord.region.label("region"),
+        TenderRecord.buyer_name.label("buyer_name"),
+        TenderRecord.estimated_value.label("estimated_value"),
+        TenderRecord.published_at.label("published_at"),
+        TenderRecord.deadline_at.label("deadline_at"),
+        literal_column("source_metadata ->> 'dataset_kind'").label("dataset_kind"),
+    )
+
+
+def _facet_counts(
+    rows: Sequence[Mapping[str, Any]], *, limit: int
+) -> dict[str, list[dict[str, Any]]]:
     status_counts: Counter[str] = Counter()
     notice_counts: Counter[str] = Counter()
     contract_counts: Counter[str] = Counter()
@@ -1131,31 +1156,37 @@ def _facet_counts(tenders: list[Tender], *, limit: int) -> dict[str, list[dict[s
     dataset_counts: Counter[str] = Counter()
     source_counts: Counter[str] = Counter()
 
-    for tender in tenders:
-        status_counts[tender.status.value] += 1
-        source_counts[tender.source.value] += 1
-        notice_type = _normalized_facet_value(tender.notice_type, uppercase=True)
+    for row in rows:
+        status = normalize_text(str(row["status"]))
+        if status:
+            status_counts[status] += 1
+        source = normalize_text(str(row["source"]))
+        if source:
+            source_counts[source] += 1
+        notice_type = _normalized_facet_value(row["notice_type"], uppercase=True)
         if notice_type:
             notice_counts[notice_type] += 1
-        contract_type = _normalized_facet_value(tender.contract_type)
+        contract_type = _normalized_facet_value(row["contract_type"])
         if contract_type:
             contract_counts[contract_type] += 1
-        procedure_type = _normalized_facet_value(tender.procedure_type)
+        procedure_type = _normalized_facet_value(row["procedure_type"])
         if procedure_type:
             procedure_counts[procedure_type] += 1
-        for cpv in tender.cpv_codes:
+        for cpv in row["cpv_codes"] or []:
             cpv_counts[cpv] += 1
             if len(cpv) >= 2:
                 cpv_prefix_counts[cpv[:2]] += 1
-        for nuts in tender.nuts_codes:
+        for nuts in row["nuts_codes"] or []:
             normalized_nuts = _normalized_nuts_value(nuts)
             if normalized_nuts:
                 nuts_counts[normalized_nuts] += 1
-        if tender.region:
-            region_counts[tender.region] += 1
-        if tender.buyer_name:
-            buyer_counts[tender.buyer_name] += 1
-        dataset_kind = tender.source_metadata.get("dataset_kind")
+        region = normalize_text(row["region"])
+        if region:
+            region_counts[region] += 1
+        buyer_name = normalize_text(row["buyer_name"])
+        if buyer_name:
+            buyer_counts[buyer_name] += 1
+        dataset_kind = row["dataset_kind"]
         normalized_dataset_kind = normalize_text(str(dataset_kind)) if dataset_kind else None
         if normalized_dataset_kind:
             dataset_counts[normalized_dataset_kind.lower()] += 1
@@ -1204,10 +1235,10 @@ def _facet_counts(tenders: list[Tender], *, limit: int) -> dict[str, list[dict[s
     }
 
 
-def _facet_ranges(tenders: list[Tender]) -> dict[str, dict[str, Any]]:
-    values = [tender.estimated_value for tender in tenders if tender.estimated_value is not None]
-    published = [tender.published_at for tender in tenders if tender.published_at is not None]
-    deadlines = [tender.deadline_at for tender in tenders if tender.deadline_at is not None]
+def _facet_ranges(rows: Sequence[Mapping[str, Any]]) -> dict[str, dict[str, Any]]:
+    values = [row["estimated_value"] for row in rows if row["estimated_value"] is not None]
+    published = [row["published_at"] for row in rows if row["published_at"] is not None]
+    deadlines = [row["deadline_at"] for row in rows if row["deadline_at"] is not None]
     return {
         "estimated_value": _numeric_range(values),
         "published_at": _datetime_range(published),

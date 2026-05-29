@@ -46,3 +46,6 @@ async def test_mcp_builds_with_expected_tools() -> None:
     assert "country" in properties
     assert "query" not in properties
     assert "query_mode" in properties
+
+    create_job_schema = next(tool.inputSchema for tool in tools if tool.name == "create_daily_job")
+    assert "nuts_codes" in create_job_schema["properties"]

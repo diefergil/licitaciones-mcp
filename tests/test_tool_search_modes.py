@@ -194,6 +194,23 @@ async def test_search_strips_empty_nuts_filters() -> None:
 
 
 @pytest.mark.asyncio
+async def test_match_tenders_accepts_nuts_codes_from_profile() -> None:
+    database = _FakeDatabase()
+    service = TenderToolService(Settings(), database)  # type: ignore[arg-type]
+
+    await service.match_tenders(
+        profile={
+            "description": "servicios TIC",
+            "nuts_codes": [" es3 "],
+            "only_open": False,
+        }
+    )
+
+    assert database.last_filters is not None
+    assert database.last_filters.nuts_codes == ["ES3"]
+
+
+@pytest.mark.asyncio
 async def test_list_source_runs_returns_structured_error_for_invalid_status() -> None:
     database = _FakeDatabase()
     service = TenderToolService(Settings(), database)  # type: ignore[arg-type]

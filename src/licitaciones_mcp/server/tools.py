@@ -372,6 +372,7 @@ class TenderToolService:
         text: str | None = None,
         cpv_codes: list[str] | None = None,
         cpv_prefixes: list[str] | None = None,
+        nuts_codes: list[str] | None = None,
         regions: list[str] | None = None,
         buyer: str | None = None,
         statuses: list[str] | None = None,
@@ -389,6 +390,7 @@ class TenderToolService:
                 text=text,
                 cpv_codes=cpv_codes,
                 cpv_prefixes=cpv_prefixes,
+                nuts_codes=nuts_codes,
                 regions=regions,
                 buyer=buyer,
                 statuses=statuses,
@@ -454,6 +456,11 @@ class TenderToolService:
         )
         cpv_codes = normalize_cpv_codes(profile.get("cpv_codes"))
         cpv_prefixes = normalize_cpv_prefixes(profile.get("cpv_prefixes"))
+        nuts_codes = (
+            [str(item) for item in profile.get("nuts_codes", [])]
+            if profile.get("nuts_codes")
+            else []
+        )
         regions = (
             [str(item) for item in profile.get("regions", [])] if profile.get("regions") else []
         )
@@ -466,6 +473,7 @@ class TenderToolService:
             text=text or None,
             cpv_codes=cpv_codes,
             cpv_prefixes=cpv_prefixes,
+            nuts_codes=nuts_codes,
             regions=regions,
             buyer=normalize_text(str(profile.get("buyer") or "")),
             dataset_kinds=dataset_kinds,
