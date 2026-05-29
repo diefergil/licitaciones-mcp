@@ -16,8 +16,9 @@ from sqlalchemy.ext.asyncio import (
     create_async_engine,
 )
 from sqlalchemy.orm import selectinload
+from sqlalchemy.sql.elements import TextClause
 
-from licitaciones_mcp.config import Settings
+from licitaciones_mcp.config import SearchBackend, Settings, get_settings
 from licitaciones_mcp.core.dedupe import attach_dedupe_key
 from licitaciones_mcp.core.models import (
     MAX_TENDER_SEARCH_LIMIT,
@@ -36,7 +37,7 @@ from licitaciones_mcp.core.models import (
 )
 from licitaciones_mcp.core.normalization import fold_text, normalize_cpv_codes
 from licitaciones_mcp.core.quality import validate_tender
-from licitaciones_mcp.core.scoring import rank_tenders
+from licitaciones_mcp.core.scoring import rank_tenders, tender_matches_filters
 from licitaciones_mcp.storage.models import (
     Base,
     DailyJobRecord,
@@ -59,15 +60,35 @@ _SEARCH_VECTOR_EXPR = (
     "coalesce(summary, '') || ' ' || "
     "coalesce(buyer_name, ''))"
 )
+_BM25_TENDERS_INDEX = "idx_tenders_bm25_text"
+_BM25_TEXT_EXPR = (
+    "coalesce(title, '') || ' ' || coalesce(summary, '') || ' ' || coalesce(buyer_name, '')"
+)
+_BM25_CREATE_INDEX_SQL = """
+CREATE INDEX IF NOT EXISTS idx_tenders_bm25_text
+    ON tenders USING bm25 ((
+        coalesce(title, '') || ' ' ||
+        coalesce(summary, '') || ' ' ||
+        coalesce(buyer_name, '')
+    ))
+    WITH (text_config='spanish')
+"""
 
 
 class TenderDatabase:
     """Repository and schema lifecycle for the local application database."""
 
-    def __init__(self, database_url: str, *, echo: bool = False) -> None:
+    def __init__(
+        self,
+        database_url: str,
+        *,
+        echo: bool = False,
+        search_backend: SearchBackend | None = None,
+    ) -> None:
         """Create a database wrapper."""
 
         self.database_url = database_url
+        self.search_backend = search_backend or get_settings().search_backend
         self.engine: AsyncEngine = create_async_engine(database_url, echo=echo)
         self.session_factory = async_sessionmaker(self.engine, expire_on_commit=False)
 
@@ -87,13 +108,18 @@ class TenderDatabase:
             from licitaciones_mcp.storage import migrations
 
             await asyncio.to_thread(
-                migrations.upgrade, "head", settings=Settings(DATABASE_URL=self.database_url)
+                migrations.upgrade,
+                "head",
+                settings=Settings(
+                    DATABASE_URL=self.database_url,
+                    LICITACIONES_SEARCH_BACKEND=self.search_backend,
+                ),
             )
             return
 
         async with self.engine.begin() as conn:
             await conn.run_sync(Base.metadata.create_all)
-            await _ensure_postgres_search_features(conn)
+            await _ensure_postgres_search_features(conn, search_backend=self.search_backend)
 
     async def close(self) -> None:
         """Dispose database connections."""
@@ -338,6 +364,12 @@ class TenderDatabase:
         async with self.session_factory() as session:
             return await _embedding_vector_available(session)
 
+    async def bm25_available(self) -> bool:
+        """Return whether pg_textsearch BM25 ranking is available for tenders."""
+
+        async with self.session_factory() as session:
+            return await _bm25_available(session)
+
     async def tender_ids_missing_embeddings(
         self, *, provider: str, model: str, limit: int = 500
     ) -> list[str]:
@@ -427,28 +459,42 @@ class TenderDatabase:
             }
 
     async def search_tenders(self, filters: TenderFilters) -> list[TenderSearchResult]:
-        """Search persisted tenders using Postgres FTS + Python reranker."""
+        """Search persisted tenders using the configured lexical backend."""
 
         async with self.session_factory() as session:
             statement = self._apply_structured_filters(
                 select(TenderRecord).options(selectinload(TenderRecord.documents)),
                 filters,
             )
-            statement = self._apply_text_filter(statement, filters.text)
             if filters.text:
-                # Order by FTS rank when text is provided; trigram match keeps
-                # rows visible even when the tsquery doesn't hit.
-                statement = statement.order_by(
-                    text(
-                        "ts_rank(search_vector, websearch_to_tsquery('spanish', :__q)) DESC"
-                    ).bindparams(__q=filters.text),
-                    TenderRecord.published_at.desc().nullslast(),
-                )
+                if self.search_backend == "bm25":
+                    if not await _bm25_available(session):
+                        raise RuntimeError(
+                            f"BM25 search backend requires pg_textsearch and {_BM25_TENDERS_INDEX}"
+                        )
+                    statement = statement.where(_bm25_match_clause(filters.text)).order_by(
+                        _bm25_order_clause(filters.text),
+                        TenderRecord.published_at.desc().nullslast(),
+                    )
+                else:
+                    statement = self._apply_text_filter(statement, filters.text)
+                    # Order by FTS rank when text is provided; trigram match keeps
+                    # rows visible even when the tsquery doesn't hit.
+                    statement = statement.order_by(
+                        text(
+                            "ts_rank(search_vector, websearch_to_tsquery('spanish', :__q)) DESC"
+                        ).bindparams(__q=filters.text),
+                        TenderRecord.published_at.desc().nullslast(),
+                    )
             else:
                 statement = statement.order_by(TenderRecord.published_at.desc().nullslast())
             statement = statement.limit(_search_candidate_limit(filters))
             records = (await session.execute(statement)).scalars().all()
-        return rank_tenders([_record_to_tender(record) for record in records], filters)
+        tenders = [_record_to_tender(record) for record in records]
+        if filters.text:
+            reason = "bm25_match" if self.search_backend == "bm25" else "fts_match"
+            return _results_from_retrieval_order(tenders, filters, reasons=[reason])
+        return rank_tenders(tenders, filters)
 
     async def semantic_search_tenders(
         self,
@@ -526,11 +572,10 @@ class TenderDatabase:
         rrf_k: int = 60,
         top_k: int = 100,
     ) -> list[TenderSearchResult]:
-        """Combine FTS and vector ranks using Reciprocal Rank Fusion.
+        """Combine lexical and vector ranks using Reciprocal Rank Fusion.
 
         Falls back to keyword-only search when no embedding is supplied.
-        The final ranking step still runs :func:`rank_tenders` so the
-        deterministic, explainable scoring stays in charge.
+        The lexical side uses the configured lexical backend.
         """
 
         if not query_embedding:
@@ -538,7 +583,12 @@ class TenderDatabase:
 
         fusion_window = max(top_k, filters.limit + filters.offset)
         keyword_filters = filters.model_copy(
-            update={"offset": 0, "limit": max(1, min(fusion_window, _SEARCH_CANDIDATE_MAX))}
+            update={
+                "offset": 0,
+                "limit": max(1, min(fusion_window, _SEARCH_CANDIDATE_MAX)),
+                "order_by": "score",
+                "order": "desc",
+            }
         )
         keyword = await self.search_tenders(keyword_filters)
         semantic = await self.semantic_search_tenders(
@@ -550,18 +600,36 @@ class TenderDatabase:
         )
         rrf: dict[str, float] = {}
         tenders: dict[str, Tender] = {}
+        reasons_by_key: dict[str, set[str]] = {}
         for rank, result in enumerate(keyword, start=1):
             key = result.tender.id or result.tender.dedupe_key or result.tender.external_id
             rrf[key] = rrf.get(key, 0.0) + 1.0 / (rrf_k + rank)
             tenders[key] = result.tender
+            reasons_by_key.setdefault(key, set()).update(result.reasons)
         for rank, (tender, _distance) in enumerate(semantic, start=1):
             key = tender.id or tender.dedupe_key or tender.external_id
             rrf[key] = rrf.get(key, 0.0) + 1.0 / (rrf_k + rank)
             tenders.setdefault(key, tender)
+            reasons_by_key.setdefault(key, set()).add("semantic_match")
         fused = sorted(
             tenders.values(), key=lambda t: rrf[t.id or t.dedupe_key or t.external_id], reverse=True
         )
-        return rank_tenders(fused, filters)
+        normalized_rrf = _normalize_scores(rrf)
+        results = [
+            TenderSearchResult(
+                tender=tender,
+                score=normalized_rrf[tender.id or tender.dedupe_key or tender.external_id],
+                reasons=sorted(
+                    reasons_by_key.get(
+                        tender.id or tender.dedupe_key or tender.external_id,
+                        {"hybrid_match"},
+                    )
+                ),
+            )
+            for tender in fused
+            if tender_matches_filters(tender, filters)
+        ]
+        return _slice_retrieval_results(results, filters)
 
     @staticmethod
     def _apply_structured_filters(statement, filters: TenderFilters):  # type: ignore[no-untyped-def]
@@ -927,7 +995,9 @@ def _tender_identifier_clause(identifier: str) -> Any:
     )
 
 
-async def _ensure_postgres_search_features(conn: AsyncConnection) -> None:
+async def _ensure_postgres_search_features(
+    conn: AsyncConnection, *, search_backend: SearchBackend
+) -> None:
     """Create Postgres-only search helpers used by the query layer."""
 
     await conn.execute(text("CREATE EXTENSION IF NOT EXISTS pg_trgm"))
@@ -968,6 +1038,7 @@ async def _ensure_postgres_search_features(conn: AsyncConnection) -> None:
         )
     )
     await _ensure_embedding_vector_features(conn)
+    await _ensure_bm25_features(conn, required=search_backend == "bm25")
 
 
 async def _ensure_embedding_vector_features(conn: AsyncConnection) -> None:
@@ -998,6 +1069,55 @@ async def _ensure_embedding_vector_features(conn: AsyncConnection) -> None:
                             RAISE NOTICE 'pgvector HNSW index unavailable for embeddings';
                     END;
                 END IF;
+            END
+            $$;
+            """
+        )
+    )
+
+
+async def _ensure_bm25_features(conn: AsyncConnection, *, required: bool) -> None:
+    """Create pg_textsearch BM25 helpers."""
+
+    if required:
+        await conn.execute(text("CREATE EXTENSION IF NOT EXISTS pg_textsearch"))
+        await conn.execute(text(_BM25_CREATE_INDEX_SQL))
+        return
+
+    await conn.execute(
+        text(
+            """
+            DO $$
+            BEGIN
+                CREATE EXTENSION IF NOT EXISTS pg_textsearch;
+            EXCEPTION
+                WHEN undefined_file OR feature_not_supported
+                    OR object_not_in_prerequisite_state OR insufficient_privilege THEN
+                    RAISE NOTICE 'pg_textsearch unavailable; explicit FTS backend remains active';
+            END
+            $$;
+            """
+        )
+    )
+    await conn.execute(
+        text(
+            """
+            DO $$
+            BEGIN
+                IF EXISTS (SELECT 1 FROM pg_extension WHERE extname = 'pg_textsearch') THEN
+                    EXECUTE 'CREATE INDEX IF NOT EXISTS idx_tenders_bm25_text
+                        ON tenders USING bm25 ((
+                            coalesce(title, '''') || '' '' ||
+                            coalesce(summary, '''') || '' '' ||
+                            coalesce(buyer_name, '''')
+                        ))
+                        WITH (text_config=''spanish'')';
+                END IF;
+            EXCEPTION
+                WHEN undefined_object OR undefined_function OR feature_not_supported
+                    OR invalid_parameter_value OR data_exception
+                    OR object_not_in_prerequisite_state OR insufficient_privilege THEN
+                    RAISE NOTICE 'pg_textsearch BM25 index unavailable; explicit FTS backend remains active';
             END
             $$;
             """
@@ -1159,6 +1279,53 @@ def _search_candidate_limit(filters: TenderFilters) -> int:
     return min(window, _SEARCH_CANDIDATE_MAX)
 
 
+def _rank_score(rank: int) -> float:
+    return round(1.0 / max(rank, 1), 6)
+
+
+def _normalize_scores(scores: dict[str, float]) -> dict[str, float]:
+    if not scores:
+        return {}
+    max_score = max(scores.values())
+    if max_score <= 0:
+        return {key: 0.0 for key in scores}
+    return {key: round(score / max_score, 6) for key, score in scores.items()}
+
+
+def _results_from_retrieval_order(
+    tenders: list[Tender],
+    filters: TenderFilters,
+    *,
+    reasons: list[str],
+) -> list[TenderSearchResult]:
+    results = [
+        TenderSearchResult(tender=tender, score=_rank_score(rank), reasons=list(reasons))
+        for rank, tender in enumerate(tenders, start=1)
+        if tender_matches_filters(tender, filters)
+    ]
+    return _slice_retrieval_results(results, filters)
+
+
+def _slice_retrieval_results(
+    results: list[TenderSearchResult], filters: TenderFilters
+) -> list[TenderSearchResult]:
+    if filters.order_by == "score":
+        ordered = list(reversed(results)) if filters.order == "asc" else results
+    else:
+        reverse = filters.order == "desc"
+
+        def key(item: TenderSearchResult) -> Any:
+            value = getattr(item.tender, filters.order_by)
+            if value is None:
+                return (
+                    datetime.min.replace(tzinfo=UTC) if filters.order_by.endswith("_at") else -1.0
+                )
+            return value
+
+        ordered = sorted(results, key=key, reverse=reverse)
+    return ordered[filters.offset : filters.offset + filters.limit]
+
+
 async def _embedding_vector_available(session: AsyncSession) -> bool:
     """Return whether the native vector shadow column can serve semantic search."""
 
@@ -1175,6 +1342,36 @@ async def _embedding_vector_available(session: AsyncSession) -> bool:
         """
     )
     return bool((await session.execute(sql)).scalar_one())
+
+
+async def _bm25_available(session: AsyncSession) -> bool:
+    """Return whether pg_textsearch and the tender BM25 index are available."""
+
+    sql = text(
+        """
+        SELECT EXISTS (
+            SELECT 1 FROM pg_extension WHERE extname = 'pg_textsearch'
+        )
+        AND to_regclass(:__index_name) IS NOT NULL
+        """
+    ).bindparams(__index_name=_BM25_TENDERS_INDEX)
+    return bool((await session.execute(sql)).scalar_one())
+
+
+def _bm25_score_sql() -> str:
+    return f"({_BM25_TEXT_EXPR}) <@> to_bm25query(:__q, '{_BM25_TENDERS_INDEX}')"
+
+
+def _bm25_match_clause(query: str) -> TextClause:
+    """Return a BM25 match predicate that excludes zero-score non-matches."""
+
+    return text(f"({_bm25_score_sql()}) < 0.0").bindparams(__q=query)
+
+
+def _bm25_order_clause(query: str) -> TextClause:
+    """Return BM25 ordering; lower negative scores are more relevant."""
+
+    return text(f"{_bm25_score_sql()} ASC").bindparams(__q=query)
 
 
 def _job_record_to_model(record: DailyJobRecord) -> DailyJob:

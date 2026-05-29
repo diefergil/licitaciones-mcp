@@ -63,6 +63,7 @@ Acceptance signals:
 - Latest scheduler heartbeat has `jobs_loaded = 1`.
 - At least one source run succeeds daily.
 - Tender embeddings count is non-zero and grows when new tenders are added.
+- `pg_textsearch` is installed and `idx_tenders_bm25_text` exists.
 
 ## Upgrade
 
@@ -74,3 +75,7 @@ docker compose -f docker-compose.yml -f deploy/production/docker-compose.overrid
 docker compose -f docker-compose.yml -f deploy/production/docker-compose.override.yml up -d --build
 deploy/production/check-health.sh /opt/licitaciones-mcp
 ```
+
+Postgres 16 to 18 is a major-version upgrade. Recreate the volume only when
+local data is disposable; otherwise use dump/restore or `pg_upgrade` before
+starting the PG18 image.

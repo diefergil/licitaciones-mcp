@@ -34,8 +34,9 @@ The server layer owns runtime integration:
 - Postgres persistence
 - daily jobs and job runs
 - source fetch run history
+- pg_textsearch BM25 ranking for lexical tender search
 - optional embedding providers
 - MCP tool handlers
 - CLI commands
 
-Any MCP-compatible client can connect to the server endpoint and call the exposed tools. Search is structured-first: clients pass explicit filters and may use `text` for lexical search, but the server does not implicitly reinterpret natural language queries.
+Any MCP-compatible client can connect to the server endpoint and call the exposed tools. Search is structured-first: clients pass explicit filters and may use `text` for lexical search, but the server does not implicitly reinterpret natural language queries. Lexical search uses BM25 by default and supports an explicit `fts` compatibility backend for development installs. Hybrid search fuses lexical and pgvector semantic ranks. Application-specific matching profiles and business reranking stay outside this retrieval engine.

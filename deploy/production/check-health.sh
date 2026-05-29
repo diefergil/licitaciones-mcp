@@ -59,6 +59,7 @@ declare
   v_jobs_loaded bigint;
   v_failed_source_runs_24h bigint;
   v_succeeded_source_runs_24h bigint;
+  v_bm25_score double precision;
 begin
   select count(*) into v_tenders from tenders;
   select count(*) into v_embeddings from tender_embeddings;
@@ -98,6 +99,27 @@ begin
 
   if v_embeddings <= 0 then
     raise exception 'database acceptance check failed: embeddings table is empty';
+  end if;
+
+  if not exists (select 1 from pg_extension where extname = 'pg_textsearch') then
+    raise exception 'database acceptance check failed: pg_textsearch extension is missing';
+  end if;
+
+  if to_regclass('idx_tenders_bm25_text') is null then
+    raise exception 'database acceptance check failed: BM25 tender index is missing';
+  end if;
+
+  select coalesce(title, '') || ' ' || coalesce(summary, '') || ' ' || coalesce(buyer_name, '')
+         <@> to_bm25query('licitacion', 'idx_tenders_bm25_text')
+    into v_bm25_score
+    from tenders
+   order by 1 nulls last
+   limit 1;
+
+  raise notice 'bm25_probe_score=%', coalesce(v_bm25_score::text, 'NULL');
+
+  if v_tenders > 0 and v_bm25_score is null then
+    raise exception 'database acceptance check failed: BM25 probe returned no score';
   end if;
 end
 $$;
