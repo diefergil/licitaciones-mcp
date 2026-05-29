@@ -74,7 +74,7 @@ async def test_search_applies_prefix_filters_and_facets(database: TenderDatabase
     tic_madrid = await _make_tender("filters-tic-madrid", "Servicios TIC Madrid")
     tic_madrid.status = TenderStatus.OPEN
     tic_madrid.cpv_codes = ["72000000"]
-    tic_madrid.nuts_codes = ["ES300"]
+    tic_madrid.nuts_codes = ["es300"]
     tic_madrid.region = "Comunidad de Madrid"
     tic_madrid.notice_type = "PUB"
     tic_madrid.contract_type = "2"

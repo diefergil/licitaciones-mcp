@@ -1514,20 +1514,35 @@ def _json_array_prefix_clause(
 
     if column not in _JSON_ARRAY_PREFIX_COLUMNS:
         raise ValueError(f"Unsupported JSON array prefix column: {column}")
-    clean_prefixes = [prefix.strip() for prefix in prefixes if prefix.strip()]
+    clean_prefixes = _sanitize_sql_prefixes(prefixes)
     if not clean_prefixes:
         return text("false")
     predicates = []
     bind_values: dict[str, str] = {}
     for index, prefix in enumerate(clean_prefixes):
         name = f"{parameter_prefix}_{index}"
-        predicates.append(f"value LIKE :{name}")
+        predicates.append(f"UPPER(value) LIKE :{name}")
         bind_values[name] = f"{prefix}%"
     sql = (
         f"EXISTS (SELECT 1 FROM jsonb_array_elements_text({column}::jsonb) AS item(value) "  # nosec B608
         f"WHERE {' OR '.join(predicates)})"
     )
     return text(sql).bindparams(**bind_values)
+
+
+def _sanitize_sql_prefixes(prefixes: list[str]) -> list[str]:
+    """Return uppercase ASCII-alphanumeric prefixes safe for SQL LIKE matching."""
+
+    cleaned: list[str] = []
+    seen: set[str] = set()
+    for prefix in prefixes:
+        normalized = "".join(
+            char for char in str(prefix).upper().strip() if char.isascii() and char.isalnum()
+        )
+        if normalized and normalized not in seen:
+            cleaned.append(normalized)
+            seen.add(normalized)
+    return cleaned
 
 
 def _search_candidate_limit(filters: TenderFilters) -> int:
