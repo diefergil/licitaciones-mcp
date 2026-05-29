@@ -110,9 +110,11 @@ begin
   end if;
 
   select coalesce(title, '') || ' ' || coalesce(summary, '') || ' ' || coalesce(buyer_name, '')
-         <@> to_bm25query('licitacion', 'idx_tenders_bm25_text')
+         <@> to_bm25query(token, 'idx_tenders_bm25_text')
     into v_bm25_score
     from tenders
+    cross join lateral regexp_split_to_table(lower(coalesce(title, '')), '\W+') as token
+   where length(token) >= 4
    order by 1 nulls last
    limit 1;
 
