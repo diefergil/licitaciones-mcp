@@ -47,7 +47,8 @@ def tender_matches_filters(tender: Tender, filters: TenderFilters) -> bool:
     if wanted_cpv_prefixes and not _cpv_prefix_overlaps(tender.cpv_codes, wanted_cpv_prefixes):
         return False
 
-    wanted_nuts = [fold_text(code) for code in filters.nuts_codes]
+    wanted_nuts = [_alnum_prefix(code).lower() for code in filters.nuts_codes]
+    wanted_nuts = [code for code in wanted_nuts if code]
     if wanted_nuts:
         tender_nuts = [fold_text(code) for code in tender.nuts_codes]
         if not any(code.startswith(wanted) for code in tender_nuts for wanted in wanted_nuts):
@@ -222,7 +223,11 @@ def _cpv_score(tender_cpvs: list[str], wanted_cpvs: list[str]) -> float:
 
 def _text_field_matches(value: str | None, filters: list[str]) -> bool:
     folded_value = fold_text(value)
-    return bool(folded_value) and any(fold_text(item) in folded_value for item in filters)
+    return bool(folded_value) and any(fold_text(item) == folded_value for item in filters)
+
+
+def _alnum_prefix(value: str) -> str:
+    return "".join(char for char in str(value).upper().strip() if char.isascii() and char.isalnum())
 
 
 def _sort_results(

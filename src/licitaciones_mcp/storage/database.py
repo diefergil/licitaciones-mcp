@@ -6,7 +6,7 @@ from collections import Counter
 from datetime import UTC, datetime
 from typing import Any
 
-from sqlalchemy import String, bindparam, delete, literal_column, or_, select, text
+from sqlalchemy import String, bindparam, delete, func, literal_column, or_, select, text
 from sqlalchemy.dialects.postgresql import ARRAY
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import (
@@ -55,6 +55,7 @@ from licitaciones_mcp.core.normalization import (
     fold_text,
     normalize_cpv_codes,
     normalize_cpv_prefixes,
+    normalize_text,
 )
 from licitaciones_mcp.core.quality import validate_tender
 from licitaciones_mcp.core.scoring import rank_tenders, tender_matches_filters
@@ -698,9 +699,7 @@ class TenderDatabase:
             statement = statement.where(
                 _json_array_prefix_clause("cpv_codes", "__cpv_prefix", cpv_prefixes)
             )
-        nuts_prefixes = [
-            normalized.upper() for item in filters.nuts_codes if (normalized := str(item).strip())
-        ]
+        nuts_prefixes = _sanitize_sql_prefixes(filters.nuts_codes)
         if nuts_prefixes:
             statement = statement.where(
                 _json_array_prefix_clause(
@@ -714,42 +713,31 @@ class TenderDatabase:
                 or_(*[TenderRecord.region.ilike(f"%{region}%") for region in filters.regions])
             )
         if filters.procedure_types:
-            statement = statement.where(
-                or_(
-                    *[
-                        TenderRecord.procedure_type.ilike(f"%{procedure_type}%")
-                        for procedure_type in filters.procedure_types
-                    ]
-                )
-            )
+            values = _normalized_exact_filter_values(filters.procedure_types)
+            if values:
+                statement = statement.where(func.lower(TenderRecord.procedure_type).in_(values))
         if filters.contract_types:
-            statement = statement.where(
-                or_(
-                    *[
-                        TenderRecord.contract_type.ilike(f"%{contract_type}%")
-                        for contract_type in filters.contract_types
-                    ]
-                )
-            )
+            values = _normalized_exact_filter_values(filters.contract_types)
+            if values:
+                statement = statement.where(func.lower(TenderRecord.contract_type).in_(values))
         if filters.notice_types:
-            statement = statement.where(
-                or_(
-                    *[
-                        TenderRecord.notice_type.ilike(f"%{notice_type}%")
-                        for notice_type in filters.notice_types
-                    ]
-                )
-            )
+            values = _normalized_exact_filter_values(filters.notice_types)
+            if values:
+                statement = statement.where(func.lower(TenderRecord.notice_type).in_(values))
         if filters.dataset_kinds:
-            statement = statement.where(
-                text("source_metadata ->> 'dataset_kind' = ANY(:__dataset_kinds)").bindparams(
-                    bindparam(
-                        "__dataset_kinds",
-                        value=[kind.lower() for kind in filters.dataset_kinds],
-                        type_=ARRAY(String()),
+            values = _normalized_exact_filter_values(filters.dataset_kinds)
+            if values:
+                statement = statement.where(
+                    text(
+                        "lower(btrim(source_metadata ->> 'dataset_kind')) = ANY(:__dataset_kinds)"
+                    ).bindparams(
+                        bindparam(
+                            "__dataset_kinds",
+                            value=values,
+                            type_=ARRAY(String()),
+                        )
                     )
                 )
-            )
         return statement
 
     @staticmethod
@@ -1157,8 +1145,9 @@ def _facet_counts(tenders: list[Tender], *, limit: int) -> dict[str, list[dict[s
         if tender.buyer_name:
             buyer_counts[tender.buyer_name] += 1
         dataset_kind = tender.source_metadata.get("dataset_kind")
-        if dataset_kind:
-            dataset_counts[str(dataset_kind)] += 1
+        normalized_dataset_kind = normalize_text(str(dataset_kind)) if dataset_kind else None
+        if normalized_dataset_kind:
+            dataset_counts[normalized_dataset_kind.lower()] += 1
 
     return {
         "statuses": [
@@ -1516,7 +1505,7 @@ def _json_array_prefix_clause(
         raise ValueError(f"Unsupported JSON array prefix column: {column}")
     clean_prefixes = _sanitize_sql_prefixes(prefixes)
     if not clean_prefixes:
-        return text("false")
+        return text("true")
     predicates = []
     bind_values: dict[str, str] = {}
     for index, prefix in enumerate(clean_prefixes):
@@ -1543,6 +1532,10 @@ def _sanitize_sql_prefixes(prefixes: list[str]) -> list[str]:
             cleaned.append(normalized)
             seen.add(normalized)
     return cleaned
+
+
+def _normalized_exact_filter_values(values: list[str]) -> list[str]:
+    return [normalized.lower() for value in values if (normalized := normalize_text(str(value)))]
 
 
 def _search_candidate_limit(filters: TenderFilters) -> int:

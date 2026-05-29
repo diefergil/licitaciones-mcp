@@ -103,6 +103,29 @@ def test_nuts_filter_is_prefix_aware() -> None:
     assert not tender_matches_filters(tender, TenderFilters(nuts_codes=["ES5"]))
 
 
+def test_code_filters_are_exact_matches() -> None:
+    tender = Tender(
+        source=TenderSource.PLACSP,
+        external_id="1",
+        title="Contrato codificado",
+        procedure_type="100",
+        contract_type="21",
+        notice_type="PUBLIC",
+    )
+
+    assert tender_matches_filters(
+        tender,
+        TenderFilters(
+            procedure_types=["100"],
+            contract_types=["21"],
+            notice_types=["PUBLIC"],
+        ),
+    )
+    assert not tender_matches_filters(tender, TenderFilters(procedure_types=["1"]))
+    assert not tender_matches_filters(tender, TenderFilters(contract_types=["2"]))
+    assert not tender_matches_filters(tender, TenderFilters(notice_types=["PUB"]))
+
+
 def test_tender_filters_reject_unbounded_offsets() -> None:
     with pytest.raises(ValidationError):
         TenderFilters(offset=MAX_TENDER_SEARCH_OFFSET + 1)

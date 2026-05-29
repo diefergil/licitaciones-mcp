@@ -87,9 +87,9 @@ async def test_search_applies_prefix_filters_and_facets(database: TenderDatabase
     obras_valencia.nuts_codes = ["ES523"]
     obras_valencia.region = "Comunitat Valenciana"
     obras_valencia.notice_type = "RES"
-    obras_valencia.contract_type = "3"
-    obras_valencia.procedure_type = "1"
-    obras_valencia.source_metadata = {"dataset_kind": "menores"}
+    obras_valencia.contract_type = "21"
+    obras_valencia.procedure_type = "100"
+    obras_valencia.source_metadata = {"dataset_kind": " MENORES "}
 
     await database.upsert_tenders([tic_madrid, obras_valencia])
 
@@ -115,6 +115,26 @@ async def test_search_applies_prefix_filters_and_facets(database: TenderDatabase
         "filters-obras-valencia",
     }
 
+    invalid_prefix_results = await database.search_tenders(
+        TenderFilters(nuts_codes=["*"], limit=10)
+    )
+    assert {result.tender.external_id for result in invalid_prefix_results} == {
+        "filters-tic-madrid",
+        "filters-obras-valencia",
+    }
+
+    exact_code_results = await database.search_tenders(
+        TenderFilters(procedure_types=["1"], contract_types=["2"], notice_types=["PUB"], limit=10)
+    )
+    assert [result.tender.external_id for result in exact_code_results] == ["filters-tic-madrid"]
+
+    dataset_kind_results = await database.search_tenders(
+        TenderFilters(dataset_kinds=[" menores "], limit=10)
+    )
+    assert [result.tender.external_id for result in dataset_kind_results] == [
+        "filters-obras-valencia"
+    ]
+
     facets = await database.list_filter_options(TenderFilters(cpv_prefixes=["72"]), limit=10)
 
     assert facets["count"] == 1
@@ -131,6 +151,12 @@ async def test_search_applies_prefix_filters_and_facets(database: TenderDatabase
     ]
     assert facets["facets"]["dataset_kinds"] == [
         {"value": "licitaciones", "label": "Licitaciones sin menores", "count": 1}
+    ]
+
+    all_facets = await database.list_filter_options(TenderFilters(), limit=10)
+    assert all_facets["facets"]["dataset_kinds"] == [
+        {"value": "licitaciones", "label": "Licitaciones sin menores", "count": 1},
+        {"value": "menores", "label": "Contratos menores", "count": 1},
     ]
 
 
