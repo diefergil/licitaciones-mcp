@@ -583,7 +583,12 @@ class TenderDatabase:
 
         fusion_window = max(top_k, filters.limit + filters.offset)
         keyword_filters = filters.model_copy(
-            update={"offset": 0, "limit": max(1, min(fusion_window, _SEARCH_CANDIDATE_MAX))}
+            update={
+                "offset": 0,
+                "limit": max(1, min(fusion_window, _SEARCH_CANDIDATE_MAX)),
+                "order_by": "score",
+                "order": "desc",
+            }
         )
         keyword = await self.search_tenders(keyword_filters)
         semantic = await self.semantic_search_tenders(

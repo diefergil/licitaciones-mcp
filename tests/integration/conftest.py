@@ -29,6 +29,7 @@ from testcontainers.postgres import PostgresContainer  # noqa: E402
 from licitaciones_mcp import config as config_module  # noqa: E402
 from licitaciones_mcp.storage.database import TenderDatabase  # noqa: E402
 
+_POSTGRES_IMAGE_FROM_ENV = "LICITACIONES_TEST_POSTGRES_IMAGE" in os.environ
 _POSTGRES_IMAGE = os.environ.get(
     "LICITACIONES_TEST_POSTGRES_IMAGE", "licitaciones-mcp-postgres:pg18-bm25-test"
 )
@@ -115,6 +116,9 @@ async def database(_database_url: str, _migrated_database: None) -> AsyncIterato
 
 def _ensure_postgres_image() -> None:
     """Build the local Postgres 18 BM25 image when it is not already present."""
+
+    if _POSTGRES_IMAGE_FROM_ENV:
+        return
 
     if shutil.which("docker") is None:
         pytest.skip("Docker CLI is required to build the Postgres 18 BM25 test image")

@@ -113,7 +113,7 @@ begin
          <@> to_bm25query('licitacion', 'idx_tenders_bm25_text')
     into v_bm25_score
     from tenders
-   order by 1
+   order by 1 nulls last
    limit 1;
 
   raise notice 'bm25_probe_score=%', coalesce(v_bm25_score::text, 'NULL');

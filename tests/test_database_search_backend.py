@@ -62,3 +62,30 @@ async def test_fts_backend_does_not_probe_bm25(monkeypatch: pytest.MonkeyPatch) 
 
     assert results == []
     await db.close()
+
+
+@pytest.mark.asyncio
+async def test_hybrid_uses_keyword_relevance_order_for_fusion(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, TenderFilters] = {}
+
+    async def search(filters: TenderFilters) -> list[object]:
+        captured["filters"] = filters
+        return []
+
+    async def semantic_search_tenders(**_kwargs: object) -> list[object]:
+        return []
+
+    db = TenderDatabase(_DATABASE_URL, search_backend="bm25")
+    monkeypatch.setattr(db, "search_tenders", search)
+    monkeypatch.setattr(db, "semantic_search_tenders", semantic_search_tenders)
+
+    await db.hybrid_search(
+        TenderFilters(text="solar", order_by="published_at", order="asc"),
+        query_embedding=[1.0],
+    )
+
+    assert captured["filters"].order_by == "score"
+    assert captured["filters"].order == "desc"
+    await db.close()
