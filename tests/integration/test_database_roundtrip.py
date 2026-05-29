@@ -76,9 +76,9 @@ async def test_search_applies_prefix_filters_and_facets(database: TenderDatabase
     tic_madrid.cpv_codes = ["72000000"]
     tic_madrid.nuts_codes = ["es300"]
     tic_madrid.region = "Comunidad de Madrid"
-    tic_madrid.notice_type = "PUB"
-    tic_madrid.contract_type = "2"
-    tic_madrid.procedure_type = "1"
+    tic_madrid.notice_type = " pub "
+    tic_madrid.contract_type = " 2 "
+    tic_madrid.procedure_type = " 1 "
     tic_madrid.source_metadata = {"dataset_kind": "licitaciones"}
 
     obras_valencia = await _make_tender("filters-obras-valencia", "Obras Valencia")
@@ -142,6 +142,9 @@ async def test_search_applies_prefix_filters_and_facets(database: TenderDatabase
     assert facets["truncated"] is False
     assert facets["ranges"]["deadline_at"]["min"] is not None
     assert facets["facets"]["statuses"] == [{"value": "open", "label": "Abierta", "count": 1}]
+    assert facets["facets"]["notice_types"] == [{"value": "PUB", "label": "En plazo", "count": 1}]
+    assert facets["facets"]["contract_types"] == [{"value": "2", "label": "Servicios", "count": 1}]
+    assert facets["facets"]["procedure_types"] == [{"value": "1", "label": "Abierto", "count": 1}]
     assert facets["facets"]["cpv_prefixes"] == [
         {
             "value": "72",
@@ -154,6 +157,10 @@ async def test_search_applies_prefix_filters_and_facets(database: TenderDatabase
     ]
 
     all_facets = await database.list_filter_options(TenderFilters(), limit=10)
+    assert all_facets["facets"]["nuts_codes"] == [
+        {"value": "ES300", "count": 1},
+        {"value": "ES523", "count": 1},
+    ]
     assert all_facets["facets"]["dataset_kinds"] == [
         {"value": "licitaciones", "label": "Licitaciones sin menores", "count": 1},
         {"value": "menores", "label": "Contratos menores", "count": 1},

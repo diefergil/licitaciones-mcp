@@ -715,15 +715,21 @@ class TenderDatabase:
         if filters.procedure_types:
             values = _normalized_exact_filter_values(filters.procedure_types)
             if values:
-                statement = statement.where(func.lower(TenderRecord.procedure_type).in_(values))
+                statement = statement.where(
+                    func.lower(func.btrim(TenderRecord.procedure_type)).in_(values)
+                )
         if filters.contract_types:
             values = _normalized_exact_filter_values(filters.contract_types)
             if values:
-                statement = statement.where(func.lower(TenderRecord.contract_type).in_(values))
+                statement = statement.where(
+                    func.lower(func.btrim(TenderRecord.contract_type)).in_(values)
+                )
         if filters.notice_types:
             values = _normalized_exact_filter_values(filters.notice_types)
             if values:
-                statement = statement.where(func.lower(TenderRecord.notice_type).in_(values))
+                statement = statement.where(
+                    func.lower(func.btrim(TenderRecord.notice_type)).in_(values)
+                )
         if filters.dataset_kinds:
             values = _normalized_exact_filter_values(filters.dataset_kinds)
             if values:
@@ -1128,18 +1134,23 @@ def _facet_counts(tenders: list[Tender], *, limit: int) -> dict[str, list[dict[s
     for tender in tenders:
         status_counts[tender.status.value] += 1
         source_counts[tender.source.value] += 1
-        if tender.notice_type:
-            notice_counts[tender.notice_type] += 1
-        if tender.contract_type:
-            contract_counts[tender.contract_type] += 1
-        if tender.procedure_type:
-            procedure_counts[tender.procedure_type] += 1
+        notice_type = _normalized_facet_value(tender.notice_type, uppercase=True)
+        if notice_type:
+            notice_counts[notice_type] += 1
+        contract_type = _normalized_facet_value(tender.contract_type)
+        if contract_type:
+            contract_counts[contract_type] += 1
+        procedure_type = _normalized_facet_value(tender.procedure_type)
+        if procedure_type:
+            procedure_counts[procedure_type] += 1
         for cpv in tender.cpv_codes:
             cpv_counts[cpv] += 1
             if len(cpv) >= 2:
                 cpv_prefix_counts[cpv[:2]] += 1
         for nuts in tender.nuts_codes:
-            nuts_counts[nuts] += 1
+            normalized_nuts = _normalized_nuts_value(nuts)
+            if normalized_nuts:
+                nuts_counts[normalized_nuts] += 1
         if tender.region:
             region_counts[tender.region] += 1
         if tender.buyer_name:
@@ -1536,6 +1547,18 @@ def _sanitize_sql_prefixes(prefixes: list[str]) -> list[str]:
 
 def _normalized_exact_filter_values(values: list[str]) -> list[str]:
     return [normalized.lower() for value in values if (normalized := normalize_text(str(value)))]
+
+
+def _normalized_facet_value(value: str | None, *, uppercase: bool = False) -> str | None:
+    normalized = normalize_text(value)
+    if normalized is None:
+        return None
+    return normalized.upper() if uppercase else normalized
+
+
+def _normalized_nuts_value(value: str) -> str | None:
+    values = _sanitize_sql_prefixes([value])
+    return values[0] if values else None
 
 
 def _search_candidate_limit(filters: TenderFilters) -> int:
