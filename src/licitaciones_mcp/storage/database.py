@@ -1076,7 +1076,7 @@ def _merge_quality_issues(
     existing: list[TenderQualityIssue],
     generated: list[TenderQualityIssue],
 ) -> list[TenderQualityIssue]:
-    """Merge parser and deterministic quality issues without duplicating codes."""
+    """Merge parser and deterministic quality issues without duplicating code/field pairs."""
 
     merged = list(existing)
     seen = {(issue.code, issue.field) for issue in merged}
