@@ -108,7 +108,7 @@ def test_parse_placsp_summary_uses_source_currency() -> None:
 
     assert tender.currency == "USD"
     assert tender.summary is not None
-    assert "Importe: 1000 USD" in tender.summary
+    assert "Importe: 1000.00 USD" in tender.summary
 
 
 def test_build_placsp_monthly_url() -> None:

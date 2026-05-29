@@ -555,7 +555,11 @@ class TenderToolService:
             text=normalize_text(text),
             cpv_codes=normalize_cpv_codes(cpv_codes),
             cpv_prefixes=normalize_cpv_prefixes(cpv_prefixes),
-            nuts_codes=[item.upper() for item in nuts_codes or []],
+            nuts_codes=[
+                normalized.upper()
+                for item in nuts_codes or []
+                if (normalized := normalize_text(str(item)))
+            ],
             regions=[item for item in regions or [] if item],
             buyer=normalize_text(buyer),
             statuses=_parse_statuses(statuses),

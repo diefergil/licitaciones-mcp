@@ -539,7 +539,7 @@ def _compose_summary(
         parts.append(f"Órgano de Contratación: {buyer_name}")
     if value is not None:
         amount_currency = currency or "EUR"
-        parts.append(f"Importe: {value:g} {amount_currency}")
+        parts.append(f"Importe: {_format_money_amount(value)} {amount_currency}")
     if status_text:
         parts.append(f"Estado: {status_text}")
     if procedure_type:
@@ -549,6 +549,10 @@ def _compose_summary(
     if region:
         parts.append(f"Ubicación: {region}")
     return "; ".join(dict.fromkeys(parts)) or None
+
+
+def _format_money_amount(value: float) -> str:
+    return f"{value:.2f}"
 
 
 def _extract_texts(root: Any | None, xpath: str) -> list[str]:

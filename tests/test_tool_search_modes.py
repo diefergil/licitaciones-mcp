@@ -183,6 +183,17 @@ async def test_list_filter_options_normalizes_new_filter_fields() -> None:
 
 
 @pytest.mark.asyncio
+async def test_search_strips_empty_nuts_filters() -> None:
+    database = _FakeDatabase()
+    service = TenderToolService(Settings(), database)  # type: ignore[arg-type]
+
+    await service.search_tenders(nuts_codes=["", " es3 "])
+
+    assert database.last_filters is not None
+    assert database.last_filters.nuts_codes == ["ES3"]
+
+
+@pytest.mark.asyncio
 async def test_list_source_runs_returns_structured_error_for_invalid_status() -> None:
     database = _FakeDatabase()
     service = TenderToolService(Settings(), database)  # type: ignore[arg-type]

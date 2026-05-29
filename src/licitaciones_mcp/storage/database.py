@@ -1511,9 +1511,12 @@ def _json_array_prefix_clause(
 
     if column not in _JSON_ARRAY_PREFIX_COLUMNS:
         raise ValueError(f"Unsupported JSON array prefix column: {column}")
+    clean_prefixes = [prefix.strip() for prefix in prefixes if prefix.strip()]
+    if not clean_prefixes:
+        return text("false")
     predicates = []
     bind_values: dict[str, str] = {}
-    for index, prefix in enumerate(prefixes):
+    for index, prefix in enumerate(clean_prefixes):
         name = f"{parameter_prefix}_{index}"
         predicates.append(f"value LIKE :{name}")
         bind_values[name] = f"{prefix}%"
