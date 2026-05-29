@@ -268,9 +268,9 @@ def _parse_entry(entry: Any, *, source_metadata: dict[str, Any]) -> Tender | Non
     links = _entry_links(entry)
     contract_folder = _first_text(entry, [".//cbc:ContractFolderID"])
     procurement_project = _find_first(entry, ".//cac:ProcurementProject")
-    contracting_party = _find_first(entry, ".//cac:ContractingParty") or _find_first(
-        entry, ".//cac:LocatedContractingParty"
-    )
+    contracting_party = _find_first(entry, ".//cac:ContractingParty")
+    if contracting_party is None:
+        contracting_party = _find_first(entry, ".//cac:LocatedContractingParty")
     tendering_process = _find_first(entry, ".//cac:TenderingProcess")
     tendering_terms = _find_first(entry, ".//cac:TenderingTerms")
     tender_result = _find_first(entry, ".//cac:TenderResult")
@@ -298,7 +298,7 @@ def _parse_entry(entry: Any, *, source_metadata: dict[str, Any]) -> Tender | Non
     )
     award_value = parse_money(
         _first_text(
-            tender_result or entry,
+            tender_result if tender_result is not None else entry,
             [
                 ".//cac:AwardedTenderedProject/cac:LegalMonetaryTotal/cbc:TaxExclusiveAmount",
                 ".//cbc:PayableAmount",
@@ -339,7 +339,7 @@ def _parse_entry(entry: Any, *, source_metadata: dict[str, Any]) -> Tender | Non
             _first_text(tendering_terms, [".//cbc:FundingProgramCode"])
         ),
         "urgency_code": normalize_text(_first_text(tendering_process, [".//cbc:UrgencyCode"])),
-        "received_tender_quantity": parse_money(received_tender_quantity),
+        "received_tender_quantity": _parse_integer(received_tender_quantity),
     }
 
     return Tender(
@@ -553,6 +553,14 @@ def _compose_summary(
 
 def _format_money_amount(value: float) -> str:
     return f"{value:.2f}"
+
+
+def _parse_integer(value: str | None) -> int | None:
+    normalized = normalize_text(value)
+    if normalized is None:
+        return None
+    digits = "".join(char for char in normalized if char.isdigit())
+    return int(digits) if digits else None
 
 
 def _extract_texts(root: Any | None, xpath: str) -> list[str]:

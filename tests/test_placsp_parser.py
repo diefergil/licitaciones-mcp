@@ -111,6 +111,33 @@ def test_parse_placsp_summary_uses_source_currency() -> None:
     assert "Importe: 1000.00 USD" in tender.summary
 
 
+def test_parse_placsp_received_tender_quantity_is_integer() -> None:
+    xml_text = """<?xml version="1.0" encoding="UTF-8"?>
+<entry xmlns="http://www.w3.org/2005/Atom"
+       xmlns:cac="urn:dgpe:names:draft:codice:schema:xsd:CommonAggregateComponents-2"
+       xmlns:cbc="urn:dgpe:names:draft:codice:schema:xsd:CommonBasicComponents-2">
+  <id>quantity-id</id>
+  <title>Licitacion ofertas</title>
+  <updated>2026-05-17T08:00:00Z</updated>
+  <cac:ContractFolderStatus>
+    <cbc:ContractFolderID>quantity-folder</cbc:ContractFolderID>
+    <cbc:ContractFolderStatusCode>ADJ</cbc:ContractFolderStatusCode>
+    <cac:ProcurementProject>
+      <cac:RequiredCommodityClassification>
+        <cbc:ItemClassificationCode>72000000</cbc:ItemClassificationCode>
+      </cac:RequiredCommodityClassification>
+    </cac:ProcurementProject>
+    <cac:TenderResult>
+      <cbc:ReceivedTenderQuantity>12 ofertas</cbc:ReceivedTenderQuantity>
+    </cac:TenderResult>
+  </cac:ContractFolderStatus>
+</entry>"""
+
+    [tender] = parse_placsp_atom(xml_text)
+
+    assert tender.raw["received_tender_quantity"] == 12
+
+
 def test_build_placsp_monthly_url() -> None:
     url = build_placsp_period_url(PLACSPDatasetKind.LICITACIONES, year=2026, month=5)
 
