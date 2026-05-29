@@ -1164,7 +1164,7 @@ def _facet_counts(
         source = normalize_text(str(row["source"]))
         if source:
             source_counts[source] += 1
-        notice_type = _normalized_facet_value(row["notice_type"], uppercase=True)
+        notice_type = _normalized_notice_facet_value(row["notice_type"])
         if notice_type:
             notice_counts[notice_type] += 1
         contract_type = _normalized_facet_value(row["contract_type"])
@@ -1246,6 +1246,16 @@ def _normalized_status_value(value: Any) -> TenderStatus:
         return TenderStatus(normalized.lower())
     except ValueError:
         return normalize_status(normalized)
+
+
+def _normalized_notice_facet_value(value: Any) -> str | None:
+    """Return canonical PLACSP notice codes without uppercasing legacy labels."""
+
+    normalized = _normalized_facet_value(value)
+    if not normalized:
+        return None
+    code = normalized.upper()
+    return code if code in PLACSP_NOTICE_TYPES else normalized
 
 
 def _facet_ranges(rows: Sequence[Mapping[str, Any]]) -> dict[str, dict[str, Any]]:

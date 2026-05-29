@@ -178,11 +178,12 @@ async def test_filter_options_tolerates_legacy_status_values(database: TenderDat
     async with database.session_factory() as session:
         await session.execute(
             text(
-                "UPDATE tenders SET status = :status "
+                "UPDATE tenders SET status = :status, notice_type = :notice_type "
                 "WHERE external_id = :external_id AND source = :source"
             ),
             {
                 "status": "OPEN",
+                "notice_type": "Publicada",
                 "external_id": "legacy-open-status",
                 "source": TenderSource.PLACSP.value,
             },
@@ -208,6 +209,11 @@ async def test_filter_options_tolerates_legacy_status_values(database: TenderDat
         "label": "Desconocida",
         "count": 1,
     } in facets["facets"]["statuses"]
+    assert {
+        "value": "Publicada",
+        "label": "Publicada",
+        "count": 1,
+    } in facets["facets"]["notice_types"]
 
 
 async def test_upsert_embeddings_rejects_mixed_dimensions(database: TenderDatabase) -> None:
