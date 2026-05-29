@@ -852,16 +852,18 @@ class TenderDatabase:
                 else:
                     statement = self._apply_text_filter(statement, active_filters.text)
             statement = statement.order_by(TenderRecord.published_at.desc().nullslast()).limit(
-                row_window
+                row_window + 1
             )
-            rows: list[dict[str, Any]] = [
+            fetched_rows: list[dict[str, Any]] = [
                 dict(row) for row in (await session.execute(statement)).mappings().all()
             ]
+            truncated = len(fetched_rows) > row_window
+            rows = fetched_rows[:row_window]
 
         return {
             "count": len(rows),
             "facet_row_window": row_window,
-            "truncated": len(rows) == row_window,
+            "truncated": truncated,
             "filters": active_filters.model_dump(mode="json"),
             "catalogs": _static_filter_catalogs(),
             "facets": _facet_counts(rows, limit=facet_limit),
