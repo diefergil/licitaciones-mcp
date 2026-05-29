@@ -5,6 +5,40 @@ All notable changes to **licitaciones-mcp** will be documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.0] — 2026-05-29
+
+Postgres 18 and production search hardening release.
+
+### Added
+
+- Reproducible Postgres 18 image with pgvector and pinned `pg_textsearch`.
+- Required BM25 search backend by default with explicit `LICITACIONES_SEARCH_BACKEND=bm25`.
+- Explicit `LICITACIONES_SEARCH_BACKEND=fts` compatibility mode for installs that cannot load
+  `pg_textsearch`.
+- Production health checks for `pg_textsearch`, `idx_tenders_bm25_text`, scheduler heartbeat,
+  source runs, and embeddings.
+- Production deployment overlay with Caddy, private MCP/Postgres services, and VPS hardening
+  helpers.
+
+### Changed
+
+- Keyword search now preserves database lexical retrieval order and returns technical retrieval
+  signals instead of application-specific matching scores.
+- Hybrid search now fuses lexical and vector candidates with Reciprocal Rank Fusion.
+- Integration tests now run against the Postgres 18 BM25 image.
+
+### Security
+
+- HTTP production deployment keeps only Caddy public and requires bearer authentication for MCP.
+- Pre-commit and CI security checks cover deployment config, Bandit, and tracked-file secret
+  scanning.
+- Docker build context excludes local private agent files.
+
+### Upgrade Notes
+
+- Postgres 16 to 18 is a major database upgrade. Existing installations must recreate disposable
+  volumes or use dump/restore or `pg_upgrade` before running this release.
+
 ## [0.2.0] — 2026-05-18
 
 First installable feature release.
