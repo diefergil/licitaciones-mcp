@@ -11,6 +11,7 @@ The project is designed as a self-hosted application. Each workspace can run its
 - Postgres persistence for tenders, documents, saved searches, daily jobs, job runs, and optional embeddings metadata.
 - MCP server exposing:
   - `search_tenders`
+  - `list_filter_options`
   - `get_tender`
   - `get_recent_tenders`
   - `search_buyers`
@@ -23,6 +24,10 @@ The project is designed as a self-hosted application. Each workspace can run its
   - `run_job_now`
   - `get_job_results`
   - `match_tenders`
+  - `semantic_search_tenders`
+  - `export_tender_ocds`
+  - `export_search_ocds`
+  - `get_tender_document`
 - CLI for database initialization, ingestion, search, job execution, and MCP serving.
 - Docker Compose deployment with Postgres.
 
@@ -65,6 +70,8 @@ uv run licitaciones-mcp search gas --source placsp --limit 10
 ```
 
 If your local certificate store rejects the PLACSP certificate chain, retry the ingest command with `--insecure-tls`.
+The ingest path stores official document URLs and metadata. It does not download
+or parse tender PDFs automatically.
 
 ## Development
 
@@ -79,7 +86,12 @@ Do not commit `.env`, local caches, database dumps, downloaded ZIP/XML source da
 
 ## Structured Search and Optional Embeddings
 
-MCP calls are structured-first. Agents or client applications should interpret user intent and call `search_tenders` with explicit filters such as `text`, `cpv_codes`, `regions`, `buyer`, `statuses`, `sources`, dates, values, and pagination. The server does not run hidden LLM query parsing in the search path.
+MCP calls are structured-first. Agents or client applications should interpret user intent and call `search_tenders` with explicit filters such as `text`, `cpv_codes`, `cpv_prefixes`, `nuts_codes`, `regions`, `buyer`, `statuses`, `sources`, `dataset_kinds`, dates, values, and pagination. The server does not run hidden LLM query parsing in the search path.
+
+Use `list_filter_options` before creating saved searches or jobs when a client
+needs real local facets. It returns static public catalogs and observed counts
+for statuses, notice types, contract types, procedure types, CPV codes/prefixes,
+NUTS codes, regions, buyers, dataset kinds, sources, and value/date ranges.
 
 Lexical ranking uses Postgres BM25 by default. The bundled Docker database is
 Postgres 18 with pgvector and `pg_textsearch`; migrations create
@@ -92,6 +104,19 @@ reciprocal rank fusion.
 Search scores are retrieval signals from BM25, vector distance, or rank fusion.
 Application-specific matching profiles and business reranking should live in the
 client or integration layer that consumes this server.
+
+Examples:
+
+```bash
+# Open ICT tenders in Madrid using CPV 72* and NUTS ES3*
+uv run licitaciones-mcp search --cpv-prefix 72 --nuts ES3 --only-open
+
+# Minor contracts for an exact CPV code
+uv run licitaciones-mcp search --cpv 72000000 --dataset-kind menores
+
+# Inspect facets before creating a daily job
+uv run licitaciones-mcp filter-options --cpv-prefix 72 --only-open
+```
 
 Embeddings are disabled by default. They activate only when an embeddings provider and API key are configured.
 
@@ -114,7 +139,8 @@ Tenders can be exported as [OCDS 1.1](https://standard.open-contracting.org/1.1/
 
 ## Document Intelligence
 
-PLACSP/TED documents (PDF first) can be downloaded and parsed:
+Ingestion keeps document URLs linked to each tender. PDF download/parsing is a
+separate optional workflow, not part of the daily PLACSP ingest path:
 
 - Background CLI: `licitaciones-mcp documents process --batch-size 25`.
 - MCP tool: `get_tender_document(document_id)` returns extracted text, sections, and parser metadata.
@@ -143,6 +169,8 @@ v1 is Spain-first:
 - TED API search responses for EU notices.
 
 Autonomous community-specific scrapers are out of scope for the first release unless they can be represented through PLACSP aggregation or TED.
+Subsidies/BDNS are not modeled in this project; they should be implemented as a
+separate source and domain if needed.
 
 ## Roadmap
 

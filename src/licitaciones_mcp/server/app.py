@@ -27,6 +27,7 @@ def build_mcp(settings: Settings | None = None) -> FastMCP:
     async def search_tenders(
         text: str | None = None,
         cpv_codes: list[str] | None = None,
+        cpv_prefixes: list[str] | None = None,
         nuts_codes: list[str] | None = None,
         regions: list[str] | None = None,
         buyer: str | None = None,
@@ -35,6 +36,7 @@ def build_mcp(settings: Settings | None = None) -> FastMCP:
         procedure_types: list[str] | None = None,
         contract_types: list[str] | None = None,
         notice_types: list[str] | None = None,
+        dataset_kinds: list[str] | None = None,
         only_open: bool = False,
         published_from: str | None = None,
         published_to: str | None = None,
@@ -55,6 +57,7 @@ def build_mcp(settings: Settings | None = None) -> FastMCP:
         return await service.search_tenders(
             text=text,
             cpv_codes=cpv_codes,
+            cpv_prefixes=cpv_prefixes,
             nuts_codes=nuts_codes,
             regions=regions,
             buyer=buyer,
@@ -63,6 +66,7 @@ def build_mcp(settings: Settings | None = None) -> FastMCP:
             procedure_types=procedure_types,
             contract_types=contract_types,
             notice_types=notice_types,
+            dataset_kinds=dataset_kinds,
             only_open=only_open,
             published_from=published_from,
             published_to=published_to,
@@ -77,6 +81,44 @@ def build_mcp(settings: Settings | None = None) -> FastMCP:
             order=cast(Any, order),
             query_mode=cast(Any, query_mode),
             refresh_sources=refresh_sources,
+        )
+
+    @mcp.tool()
+    async def list_filter_options(
+        text: str | None = None,
+        cpv_codes: list[str] | None = None,
+        cpv_prefixes: list[str] | None = None,
+        nuts_codes: list[str] | None = None,
+        regions: list[str] | None = None,
+        buyer: str | None = None,
+        statuses: list[str] | None = None,
+        sources: list[str] | None = None,
+        procedure_types: list[str] | None = None,
+        contract_types: list[str] | None = None,
+        notice_types: list[str] | None = None,
+        dataset_kinds: list[str] | None = None,
+        only_open: bool = False,
+        country: str | None = None,
+        limit: int = 50,
+    ) -> dict[str, Any]:
+        """List static filter catalogs and local facet counts."""
+
+        return await service.list_filter_options(
+            text=text,
+            cpv_codes=cpv_codes,
+            cpv_prefixes=cpv_prefixes,
+            nuts_codes=nuts_codes,
+            regions=regions,
+            buyer=buyer,
+            statuses=statuses,
+            sources=sources,
+            procedure_types=procedure_types,
+            contract_types=contract_types,
+            notice_types=notice_types,
+            dataset_kinds=dataset_kinds,
+            only_open=only_open,
+            country=country,
+            limit=limit,
         )
 
     @mcp.tool()
@@ -150,10 +192,12 @@ def build_mcp(settings: Settings | None = None) -> FastMCP:
         name: str,
         text: str | None = None,
         cpv_codes: list[str] | None = None,
+        cpv_prefixes: list[str] | None = None,
         regions: list[str] | None = None,
         buyer: str | None = None,
         statuses: list[str] | None = None,
         sources: list[str] | None = None,
+        dataset_kinds: list[str] | None = None,
         only_open: bool = True,
         hour_utc: int = 7,
         cron: str | None = None,
@@ -165,10 +209,12 @@ def build_mcp(settings: Settings | None = None) -> FastMCP:
             name=name,
             text=text,
             cpv_codes=cpv_codes,
+            cpv_prefixes=cpv_prefixes,
             regions=regions,
             buyer=buyer,
             statuses=statuses,
             sources=sources,
+            dataset_kinds=dataset_kinds,
             only_open=only_open,
             hour_utc=hour_utc,
             cron=cron,
@@ -221,6 +267,7 @@ def build_mcp(settings: Settings | None = None) -> FastMCP:
     async def export_search_ocds(
         text: str | None = None,
         cpv_codes: list[str] | None = None,
+        cpv_prefixes: list[str] | None = None,
         regions: list[str] | None = None,
         only_open: bool = False,
         limit: int = 50,
@@ -230,6 +277,7 @@ def build_mcp(settings: Settings | None = None) -> FastMCP:
         return await service.export_search_ocds(
             text=text,
             cpv_codes=cpv_codes,
+            cpv_prefixes=cpv_prefixes,
             regions=regions,
             only_open=only_open,
             limit=limit,

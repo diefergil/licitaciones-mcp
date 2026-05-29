@@ -18,7 +18,12 @@ from licitaciones_mcp.core.models import (
     TenderSource,
     TenderStatus,
 )
-from licitaciones_mcp.core.normalization import normalize_cpv_codes, normalize_text, parse_date
+from licitaciones_mcp.core.normalization import (
+    normalize_cpv_codes,
+    normalize_cpv_prefixes,
+    normalize_text,
+    parse_date,
+)
 from licitaciones_mcp.jobs.runner import DailyJobRunner, SourceIngestor
 from licitaciones_mcp.sources.placsp import PLACSPDatasetKind, build_placsp_period_url
 from licitaciones_mcp.storage.database import TenderDatabase
@@ -40,6 +45,7 @@ class TenderToolService:
         *,
         text: str | None = None,
         cpv_codes: list[str] | None = None,
+        cpv_prefixes: list[str] | None = None,
         nuts_codes: list[str] | None = None,
         regions: list[str] | None = None,
         buyer: str | None = None,
@@ -48,6 +54,7 @@ class TenderToolService:
         procedure_types: list[str] | None = None,
         contract_types: list[str] | None = None,
         notice_types: list[str] | None = None,
+        dataset_kinds: list[str] | None = None,
         only_open: bool = False,
         published_from: str | None = None,
         published_to: str | None = None,
@@ -69,6 +76,7 @@ class TenderToolService:
             filters = self._build_filters(
                 text=text,
                 cpv_codes=cpv_codes,
+                cpv_prefixes=cpv_prefixes,
                 nuts_codes=nuts_codes,
                 regions=regions,
                 buyer=buyer,
@@ -77,6 +85,7 @@ class TenderToolService:
                 procedure_types=procedure_types,
                 contract_types=contract_types,
                 notice_types=notice_types,
+                dataset_kinds=dataset_kinds,
                 only_open=only_open,
                 published_from=published_from,
                 published_to=published_to,
@@ -143,6 +152,49 @@ class TenderToolService:
         else:
             results = await self.database.search_tenders(filters)
         return _search_response(filters, results)
+
+    async def list_filter_options(
+        self,
+        *,
+        text: str | None = None,
+        cpv_codes: list[str] | None = None,
+        cpv_prefixes: list[str] | None = None,
+        nuts_codes: list[str] | None = None,
+        regions: list[str] | None = None,
+        buyer: str | None = None,
+        statuses: list[str] | None = None,
+        sources: list[str] | None = None,
+        procedure_types: list[str] | None = None,
+        contract_types: list[str] | None = None,
+        notice_types: list[str] | None = None,
+        dataset_kinds: list[str] | None = None,
+        only_open: bool = False,
+        country: str | None = None,
+        limit: int = 50,
+    ) -> dict[str, Any]:
+        """Return static catalogs and local facet counts for available filters."""
+
+        try:
+            filters = self._build_filters(
+                text=text,
+                cpv_codes=cpv_codes,
+                cpv_prefixes=cpv_prefixes,
+                nuts_codes=nuts_codes,
+                regions=regions,
+                buyer=buyer,
+                statuses=statuses,
+                sources=sources,
+                procedure_types=procedure_types,
+                contract_types=contract_types,
+                notice_types=notice_types,
+                dataset_kinds=dataset_kinds,
+                only_open=only_open,
+                country=country,
+                limit=MAX_TENDER_SEARCH_LIMIT,
+            )
+        except (ValidationError, ValueError) as exc:
+            return _invalid_filters_response(exc, collection="facets")
+        return await self.database.list_filter_options(filters, limit=limit)
 
     async def _embed_query(self, query: str) -> tuple[list[float], str | None, str | None]:
         """Embed a query string using the configured embedder; returns [] when disabled."""
@@ -319,10 +371,12 @@ class TenderToolService:
         name: str,
         text: str | None = None,
         cpv_codes: list[str] | None = None,
+        cpv_prefixes: list[str] | None = None,
         regions: list[str] | None = None,
         buyer: str | None = None,
         statuses: list[str] | None = None,
         sources: list[str] | None = None,
+        dataset_kinds: list[str] | None = None,
         only_open: bool = True,
         hour_utc: int = 7,
         cron: str | None = None,
@@ -334,10 +388,12 @@ class TenderToolService:
             filters = self._build_filters(
                 text=text,
                 cpv_codes=cpv_codes,
+                cpv_prefixes=cpv_prefixes,
                 regions=regions,
                 buyer=buyer,
                 statuses=statuses,
                 sources=sources,
+                dataset_kinds=dataset_kinds,
                 only_open=only_open,
                 limit=limit,
             )
@@ -397,14 +453,22 @@ class TenderToolService:
             if key in {"description", "activity", "services", "keywords"} and value
         )
         cpv_codes = normalize_cpv_codes(profile.get("cpv_codes"))
+        cpv_prefixes = normalize_cpv_prefixes(profile.get("cpv_prefixes"))
         regions = (
             [str(item) for item in profile.get("regions", [])] if profile.get("regions") else []
+        )
+        dataset_kinds = (
+            [str(item) for item in profile.get("dataset_kinds", [])]
+            if profile.get("dataset_kinds")
+            else []
         )
         return await self.search_tenders(
             text=text or None,
             cpv_codes=cpv_codes,
+            cpv_prefixes=cpv_prefixes,
             regions=regions,
             buyer=normalize_text(str(profile.get("buyer") or "")),
+            dataset_kinds=dataset_kinds,
             only_open=bool(profile.get("only_open", True)),
             limit=limit,
             refresh_sources=refresh_sources,
@@ -434,6 +498,7 @@ class TenderToolService:
         *,
         text: str | None = None,
         cpv_codes: list[str] | None = None,
+        cpv_prefixes: list[str] | None = None,
         regions: list[str] | None = None,
         only_open: bool = False,
         limit: int = 50,
@@ -446,6 +511,7 @@ class TenderToolService:
             filters = self._build_filters(
                 text=text,
                 cpv_codes=cpv_codes,
+                cpv_prefixes=cpv_prefixes,
                 regions=regions,
                 only_open=only_open,
                 limit=limit,
@@ -461,6 +527,7 @@ class TenderToolService:
         *,
         text: str | None = None,
         cpv_codes: list[str] | None = None,
+        cpv_prefixes: list[str] | None = None,
         nuts_codes: list[str] | None = None,
         regions: list[str] | None = None,
         buyer: str | None = None,
@@ -469,6 +536,7 @@ class TenderToolService:
         procedure_types: list[str] | None = None,
         contract_types: list[str] | None = None,
         notice_types: list[str] | None = None,
+        dataset_kinds: list[str] | None = None,
         only_open: bool = False,
         published_from: str | None = None,
         published_to: str | None = None,
@@ -486,6 +554,7 @@ class TenderToolService:
         return TenderFilters(
             text=normalize_text(text),
             cpv_codes=normalize_cpv_codes(cpv_codes),
+            cpv_prefixes=normalize_cpv_prefixes(cpv_prefixes),
             nuts_codes=[item.upper() for item in nuts_codes or []],
             regions=[item for item in regions or [] if item],
             buyer=normalize_text(buyer),
@@ -494,6 +563,7 @@ class TenderToolService:
             procedure_types=[item for item in procedure_types or [] if item],
             contract_types=[item for item in contract_types or [] if item],
             notice_types=[item for item in notice_types or [] if item],
+            dataset_kinds=[item.lower() for item in dataset_kinds or [] if item],
             only_open=only_open,
             published_from=parse_date(published_from),
             published_to=parse_date(published_to),

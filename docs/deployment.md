@@ -82,3 +82,9 @@ docker compose -f docker-compose.yml -f deploy/production/docker-compose.overrid
 docker compose -f docker-compose.yml -f deploy/production/docker-compose.override.yml up -d --build
 deploy/production/check-health.sh /opt/licitaciones-mcp
 ```
+
+For the `0.4.0` PLACSP normalization upgrade, small disposable pilots can recreate
+the Postgres volume and reingest the current PLACSP period instead of running a
+backfill. After reingest, verify that normal PLACSP rows have non-`unknown`
+statuses and that `list_filter_options` returns visible status, CPV, NUTS, and
+dataset-kind facets.

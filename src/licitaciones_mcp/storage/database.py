@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections import Counter
 from datetime import UTC, datetime
 from typing import Any
 
@@ -19,6 +20,21 @@ from sqlalchemy.orm import selectinload
 from sqlalchemy.sql.elements import TextClause
 
 from licitaciones_mcp.config import SearchBackend, Settings, get_settings
+from licitaciones_mcp.core.catalogs import (
+    CPV_SECTORS,
+    PLACSP_CONTRACT_TYPES,
+    PLACSP_DATASET_KINDS,
+    PLACSP_NOTICE_STATUS,
+    PLACSP_NOTICE_TYPES,
+    PLACSP_PROCEDURE_TYPES,
+    cpv_sector_label,
+    dataset_kind_label,
+    placsp_contract_type_label,
+    placsp_notice_label,
+    placsp_procedure_type_label,
+    source_label,
+    status_label,
+)
 from licitaciones_mcp.core.dedupe import attach_dedupe_key
 from licitaciones_mcp.core.models import (
     MAX_TENDER_SEARCH_LIMIT,
@@ -35,7 +51,11 @@ from licitaciones_mcp.core.models import (
     TenderSource,
     TenderStatus,
 )
-from licitaciones_mcp.core.normalization import fold_text, normalize_cpv_codes
+from licitaciones_mcp.core.normalization import (
+    fold_text,
+    normalize_cpv_codes,
+    normalize_cpv_prefixes,
+)
 from licitaciones_mcp.core.quality import validate_tender
 from licitaciones_mcp.core.scoring import rank_tenders, tender_matches_filters
 from licitaciones_mcp.storage.models import (
@@ -61,6 +81,7 @@ _SEARCH_VECTOR_EXPR = (
     "coalesce(buyer_name, ''))"
 )
 _BM25_TENDERS_INDEX = "idx_tenders_bm25_text"
+_JSON_ARRAY_PREFIX_COLUMNS = {"cpv_codes", "nuts_codes"}
 _BM25_TEXT_EXPR = (
     "coalesce(title, '') || ' ' || coalesce(summary, '') || ' ' || coalesce(buyer_name, '')"
 )
@@ -671,10 +692,17 @@ class TenderDatabase:
                     )
                 )
             )
+        cpv_prefixes = normalize_cpv_prefixes(filters.cpv_prefixes)
+        if cpv_prefixes:
+            statement = statement.where(
+                _json_array_prefix_clause("cpv_codes", "__cpv_prefix", cpv_prefixes)
+            )
         if filters.nuts_codes:
             statement = statement.where(
-                text("nuts_codes::jsonb ?| :__nuts_codes").bindparams(
-                    bindparam("__nuts_codes", value=filters.nuts_codes, type_=ARRAY(String()))
+                _json_array_prefix_clause(
+                    "nuts_codes",
+                    "__nuts_prefix",
+                    [item.upper() for item in filters.nuts_codes],
                 )
             )
         if filters.regions:
@@ -706,6 +734,16 @@ class TenderDatabase:
                         TenderRecord.notice_type.ilike(f"%{notice_type}%")
                         for notice_type in filters.notice_types
                     ]
+                )
+            )
+        if filters.dataset_kinds:
+            statement = statement.where(
+                text("source_metadata ->> 'dataset_kind' = ANY(:__dataset_kinds)").bindparams(
+                    bindparam(
+                        "__dataset_kinds",
+                        value=[kind.lower() for kind in filters.dataset_kinds],
+                        type_=ARRAY(String()),
+                    )
                 )
             )
         return statement
@@ -791,6 +829,37 @@ class TenderDatabase:
                 : max(1, min(limit, 100))
             ]
         ]
+
+    async def list_filter_options(
+        self,
+        filters: TenderFilters | None = None,
+        *,
+        limit: int = 50,
+    ) -> dict[str, Any]:
+        """Return static catalogs and local facet counts for tender filters."""
+
+        active_filters = filters or TenderFilters(limit=MAX_TENDER_SEARCH_LIMIT)
+        facet_limit = max(1, min(limit, 200))
+        async with self.session_factory() as session:
+            statement = self._apply_structured_filters(
+                select(TenderRecord).options(selectinload(TenderRecord.documents)),
+                active_filters,
+            )
+            if active_filters.text:
+                if self.search_backend == "bm25" and await _bm25_available(session):
+                    statement = statement.where(_bm25_match_clause(active_filters.text))
+                else:
+                    statement = self._apply_text_filter(statement, active_filters.text)
+            records = (await session.execute(statement)).scalars().all()
+
+        tenders = [_record_to_tender(record) for record in records]
+        return {
+            "count": len(tenders),
+            "filters": active_filters.model_dump(mode="json"),
+            "catalogs": _static_filter_catalogs(),
+            "facets": _facet_counts(tenders, limit=facet_limit),
+            "ranges": _facet_ranges(tenders),
+        }
 
     async def create_daily_job(self, job: DailyJob) -> DailyJob:
         """Create or replace a named daily job."""
@@ -957,8 +1026,9 @@ class TenderDatabase:
         )
 
     async def _upsert_tender(self, session: AsyncSession, tender: Tender) -> str:
-        if not tender.quality_issues:
-            tender.quality_issues = validate_tender(tender)
+        tender.quality_issues = _merge_quality_issues(
+            tender.quality_issues, validate_tender(tender)
+        )
         document_records = [_document_to_record(document) for document in tender.documents]
         existing = (
             (
@@ -993,6 +1063,162 @@ def _tender_identifier_clause(identifier: str) -> Any:
         | (TenderRecord.external_id == identifier)
         | (TenderRecord.dedupe_key == identifier)
     )
+
+
+def _merge_quality_issues(
+    existing: list[TenderQualityIssue],
+    generated: list[TenderQualityIssue],
+) -> list[TenderQualityIssue]:
+    """Merge parser and deterministic quality issues without duplicating codes."""
+
+    merged = list(existing)
+    seen = {(issue.code, issue.field) for issue in merged}
+    for issue in generated:
+        key = (issue.code, issue.field)
+        if key not in seen:
+            merged.append(issue)
+            seen.add(key)
+    return merged
+
+
+def _static_filter_catalogs() -> dict[str, Any]:
+    """Return versioned static catalogs for clients building filter UIs."""
+
+    return {
+        "statuses": [
+            {"value": status.value, "label": status_label(status)} for status in TenderStatus
+        ],
+        "notice_types": [
+            {
+                "value": value,
+                "label": label,
+                "status": PLACSP_NOTICE_STATUS.get(value, TenderStatus.UNKNOWN).value,
+            }
+            for value, label in PLACSP_NOTICE_TYPES.items()
+        ],
+        "contract_types": [
+            {"value": value, "label": label} for value, label in PLACSP_CONTRACT_TYPES.items()
+        ],
+        "procedure_types": [
+            {"value": value, "label": label} for value, label in PLACSP_PROCEDURE_TYPES.items()
+        ],
+        "dataset_kinds": [
+            {"value": value, "label": label} for value, label in PLACSP_DATASET_KINDS.items()
+        ],
+        "sources": [
+            {"value": source.value, "label": source_label(source)} for source in TenderSource
+        ],
+        "cpv_sectors": [
+            {"value": value, "label": label} for value, label in sorted(CPV_SECTORS.items())
+        ],
+    }
+
+
+def _facet_counts(tenders: list[Tender], *, limit: int) -> dict[str, list[dict[str, Any]]]:
+    status_counts: Counter[str] = Counter()
+    notice_counts: Counter[str] = Counter()
+    contract_counts: Counter[str] = Counter()
+    procedure_counts: Counter[str] = Counter()
+    cpv_counts: Counter[str] = Counter()
+    cpv_prefix_counts: Counter[str] = Counter()
+    nuts_counts: Counter[str] = Counter()
+    region_counts: Counter[str] = Counter()
+    buyer_counts: Counter[str] = Counter()
+    dataset_counts: Counter[str] = Counter()
+    source_counts: Counter[str] = Counter()
+
+    for tender in tenders:
+        status_counts[tender.status.value] += 1
+        source_counts[tender.source.value] += 1
+        if tender.notice_type:
+            notice_counts[tender.notice_type] += 1
+        if tender.contract_type:
+            contract_counts[tender.contract_type] += 1
+        if tender.procedure_type:
+            procedure_counts[tender.procedure_type] += 1
+        for cpv in tender.cpv_codes:
+            cpv_counts[cpv] += 1
+            if len(cpv) >= 2:
+                cpv_prefix_counts[cpv[:2]] += 1
+        for nuts in tender.nuts_codes:
+            nuts_counts[nuts] += 1
+        if tender.region:
+            region_counts[tender.region] += 1
+        if tender.buyer_name:
+            buyer_counts[tender.buyer_name] += 1
+        dataset_kind = tender.source_metadata.get("dataset_kind")
+        if dataset_kind:
+            dataset_counts[str(dataset_kind)] += 1
+
+    return {
+        "statuses": [
+            {"value": value, "label": status_label(TenderStatus(value)), "count": count}
+            for value, count in _top_counter(status_counts, limit)
+        ],
+        "notice_types": [
+            {"value": value, "label": placsp_notice_label(value), "count": count}
+            for value, count in _top_counter(notice_counts, limit)
+        ],
+        "contract_types": [
+            {"value": value, "label": placsp_contract_type_label(value), "count": count}
+            for value, count in _top_counter(contract_counts, limit)
+        ],
+        "procedure_types": [
+            {"value": value, "label": placsp_procedure_type_label(value), "count": count}
+            for value, count in _top_counter(procedure_counts, limit)
+        ],
+        "cpv_codes": [
+            {"value": value, "count": count} for value, count in _top_counter(cpv_counts, limit)
+        ],
+        "cpv_prefixes": [
+            {"value": value, "label": cpv_sector_label(value), "count": count}
+            for value, count in _top_counter(cpv_prefix_counts, limit)
+        ],
+        "nuts_codes": [
+            {"value": value, "count": count} for value, count in _top_counter(nuts_counts, limit)
+        ],
+        "regions": [
+            {"value": value, "count": count} for value, count in _top_counter(region_counts, limit)
+        ],
+        "buyers": [
+            {"value": value, "count": count} for value, count in _top_counter(buyer_counts, limit)
+        ],
+        "dataset_kinds": [
+            {"value": value, "label": dataset_kind_label(value), "count": count}
+            for value, count in _top_counter(dataset_counts, limit)
+        ],
+        "sources": [
+            {"value": value, "label": value.upper(), "count": count}
+            for value, count in _top_counter(source_counts, limit)
+        ],
+    }
+
+
+def _facet_ranges(tenders: list[Tender]) -> dict[str, dict[str, Any]]:
+    values = [tender.estimated_value for tender in tenders if tender.estimated_value is not None]
+    published = [tender.published_at for tender in tenders if tender.published_at is not None]
+    deadlines = [tender.deadline_at for tender in tenders if tender.deadline_at is not None]
+    return {
+        "estimated_value": _numeric_range(values),
+        "published_at": _datetime_range(published),
+        "deadline_at": _datetime_range(deadlines),
+    }
+
+
+def _top_counter(counter: Counter[str], limit: int) -> list[tuple[str, int]]:
+    return sorted(counter.items(), key=lambda item: (-item[1], item[0]))[:limit]
+
+
+def _numeric_range(values: list[float]) -> dict[str, float | None]:
+    if not values:
+        return {"min": None, "max": None}
+    return {"min": min(values), "max": max(values)}
+
+
+def _datetime_range(values: list[datetime]) -> dict[str, str | None]:
+    if not values:
+        return {"min": None, "max": None}
+    return {"min": min(values).isoformat(), "max": max(values).isoformat()}
 
 
 async def _ensure_postgres_search_features(
@@ -1266,6 +1492,26 @@ def _source_fetch_run_status_value(status: SourceFetchRunStatus | str) -> str:
         return SourceFetchRunStatus(str(status).lower()).value
     except ValueError as exc:
         raise ValueError(f"Invalid source fetch run status: {status}") from exc
+
+
+def _json_array_prefix_clause(
+    column: str, parameter_prefix: str, prefixes: list[str]
+) -> TextClause:
+    """Return a jsonb array text prefix predicate for CPV/NUTS filters."""
+
+    if column not in _JSON_ARRAY_PREFIX_COLUMNS:
+        raise ValueError(f"Unsupported JSON array prefix column: {column}")
+    predicates = []
+    bind_values: dict[str, str] = {}
+    for index, prefix in enumerate(prefixes):
+        name = f"{parameter_prefix}_{index}"
+        predicates.append(f"value LIKE :{name}")
+        bind_values[name] = f"{prefix}%"
+    sql = (
+        f"EXISTS (SELECT 1 FROM jsonb_array_elements_text({column}::jsonb) AS item(value) "  # nosec B608
+        f"WHERE {' OR '.join(predicates)})"
+    )
+    return text(sql).bindparams(**bind_values)
 
 
 def _search_candidate_limit(filters: TenderFilters) -> int:

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import zipfile
 from dataclasses import dataclass
+from datetime import datetime
 from enum import StrEnum
 from io import BytesIO
 from pathlib import Path
@@ -34,6 +35,8 @@ from licitaciones_mcp.sources.base import TenderSourceClient
 ATOM_NS = {"atom": "http://www.w3.org/2005/Atom"}
 CAC_NS = "urn:dgpe:names:draft:codice:schema:xsd:CommonAggregateComponents-2"
 CBC_NS = "urn:dgpe:names:draft:codice:schema:xsd:CommonBasicComponents-2"
+CAC_PLACE_EXT_NS = "urn:dgpe:names:draft:codice-place-ext:schema:xsd:CommonAggregateComponents-2"
+CBC_PLACE_EXT_NS = "urn:dgpe:names:draft:codice-place-ext:schema:xsd:CommonBasicComponents-2"
 PLACSP_BASE = "https://contrataciondelsectorpublico.gob.es"
 DEFAULT_USER_AGENT = default_user_agent()
 
@@ -144,11 +147,15 @@ class PLACSPClient(TenderSourceClient):
         async with self._client() as client:
             response = await client.get(self.feed_url)
             response.raise_for_status()
-        tenders = parse_placsp_atom(response.text, source_metadata={"feed_url": self.feed_url})
+        source_metadata = {
+            "dataset_kind": PLACSPDatasetKind.LICITACIONES.value,
+            "feed_url": self.feed_url,
+        }
+        tenders = parse_placsp_atom(response.text, source_metadata=source_metadata)
         return SourceFetchResult(
             source=TenderSource.PLACSP,
             tenders=[tender for tender in tenders if tender_matches_filters(tender, filters)],
-            metadata={"feed_url": self.feed_url},
+            metadata=source_metadata,
         )
 
     async def fetch_period(
@@ -256,9 +263,8 @@ def _parse_entry(entry: Any, *, source_metadata: dict[str, Any]) -> Tender | Non
     if not title or not external_id:
         return None
 
-    summary = normalize_text(_text(entry, "atom:summary"))
+    atom_summary = normalize_text(_text(entry, "atom:summary"))
     updated = parse_datetime(_text(entry, "atom:updated"))
-    published = parse_datetime(_text(entry, "atom:published")) or updated
     links = _entry_links(entry)
     contract_folder = _first_text(entry, [".//cbc:ContractFolderID"])
     procurement_project = _find_first(entry, ".//cac:ProcurementProject")
@@ -266,21 +272,20 @@ def _parse_entry(entry: Any, *, source_metadata: dict[str, Any]) -> Tender | Non
         entry, ".//cac:LocatedContractingParty"
     )
     tendering_process = _find_first(entry, ".//cac:TenderingProcess")
+    tendering_terms = _find_first(entry, ".//cac:TenderingTerms")
+    tender_result = _find_first(entry, ".//cac:TenderResult")
 
     cpv_codes = _extract_cpvs(procurement_project)
     buyer_name = _extract_buyer_name(contracting_party)
     buyer_tax_id = _extract_party_identifier(contracting_party)
     status_text = _first_text(entry, [".//cbc:ContractFolderStatusCode", ".//cbc:StatusCode"])
     status = normalize_status(status_text)
-    deadline = parse_datetime(
-        _first_text(
-            tendering_process,
-            [
-                ".//cbc:EndDate",
-                ".//cbc:DeadlineDate",
-            ],
-        )
+    published = (
+        _extract_publication_date(entry)
+        or parse_datetime(_text(entry, "atom:published"))
+        or updated
     )
+    deadline = _extract_deadline(tendering_process)
     value = parse_money(
         _first_text(
             procurement_project,
@@ -293,25 +298,48 @@ def _parse_entry(entry: Any, *, source_metadata: dict[str, Any]) -> Tender | Non
     )
     award_value = parse_money(
         _first_text(
-            entry,
+            tender_result or entry,
             [
+                ".//cac:AwardedTenderedProject/cac:LegalMonetaryTotal/cbc:TaxExclusiveAmount",
                 ".//cbc:PayableAmount",
                 ".//cbc:AwardedTenderedProjectAmount",
             ],
         )
     )
     region = normalize_region(
-        _first_text(
-            entry,
-            [
-                ".//cbc:CountrySubentity",
-                ".//cbc:CityName",
-            ],
-        )
+        _extract_project_region(procurement_project) or _extract_buyer_city(contracting_party)
     )
-    nuts_codes = _extract_texts(entry, ".//cbc:CountrySubentityCode")
+    nuts_codes = _extract_project_nuts(procurement_project) or _extract_texts(
+        entry, ".//cbc:CountrySubentityCode"
+    )
     procedure_type = normalize_text(_first_text(tendering_process, [".//cbc:ProcedureCode"]))
     contract_type = normalize_text(_first_text(procurement_project, [".//cbc:TypeCode"]))
+    awarded_at = parse_datetime(_first_text(tender_result, [".//cbc:AwardDate"]))
+    winner_name = _extract_winner_name(tender_result)
+    winner_tax_id = _extract_winner_tax_id(tender_result)
+    received_tender_quantity = _first_text(tender_result, [".//cbc:ReceivedTenderQuantity"])
+    currency = _extract_currency(procurement_project, tender_result) or "EUR"
+    summary = _compose_summary(
+        atom_summary=atom_summary,
+        contract_folder=contract_folder,
+        buyer_name=buyer_name,
+        value=value,
+        status_text=status_text,
+        procedure_type=procedure_type,
+        contract_type=contract_type,
+        region=region,
+    )
+    raw = {
+        "atom_id": external_id,
+        "status_code": status_text,
+        "procedure_code": procedure_type,
+        "contract_type_code": contract_type,
+        "funding_program_code": normalize_text(
+            _first_text(tendering_terms, [".//cbc:FundingProgramCode"])
+        ),
+        "urgency_code": normalize_text(_first_text(tendering_process, [".//cbc:UrgencyCode"])),
+        "received_tender_quantity": parse_money(received_tender_quantity),
+    }
 
     return Tender(
         source=TenderSource.PLACSP,
@@ -329,11 +357,15 @@ def _parse_entry(entry: Any, *, source_metadata: dict[str, Any]) -> Tender | Non
         notice_type=status_text,
         estimated_value=value,
         award_value=award_value,
+        currency=currency,
         published_at=published,
         deadline_at=deadline,
+        awarded_at=awarded_at,
+        winner_name=winner_name,
+        winner_tax_id=winner_tax_id,
         url=links[0] if links else None,
         documents=[TenderDocument(url=link, title="PLACSP link") for link in links],
-        raw={"atom_id": external_id},
+        raw={key: value for key, value in raw.items() if value is not None},
         source_metadata=source_metadata,
     )
 
@@ -395,6 +427,127 @@ def _extract_party_identifier(contracting_party: Any | None) -> str | None:
     return candidates[0][0] if candidates else None
 
 
+def _extract_publication_date(entry: Any) -> datetime | None:
+    return parse_datetime(
+        _first_text(
+            entry,
+            [
+                ".//cac:AdditionalPublicationDocumentReference/cbc:IssueDate",
+                ".//cbc:IssueDate",
+            ],
+        )
+    )
+
+
+def _extract_deadline(tendering_process: Any | None) -> datetime | None:
+    end_date = _first_text(
+        tendering_process,
+        [
+            ".//cac:TenderSubmissionDeadlinePeriod/cbc:EndDate",
+            ".//cbc:DeadlineDate",
+            ".//cbc:EndDate",
+        ],
+    )
+    end_time = _first_text(
+        tendering_process,
+        [
+            ".//cac:TenderSubmissionDeadlinePeriod/cbc:EndTime",
+            ".//cbc:DeadlineTime",
+            ".//cbc:EndTime",
+        ],
+    )
+    if end_date and end_time:
+        return parse_datetime(f"{end_date}T{end_time}")
+    return parse_datetime(end_date)
+
+
+def _extract_project_region(project: Any | None) -> str | None:
+    return _first_text(
+        project,
+        [
+            ".//cac:RealizedLocation/cbc:CountrySubentity",
+            ".//cbc:CountrySubentity",
+        ],
+    )
+
+
+def _extract_project_nuts(project: Any | None) -> list[str]:
+    values = _extract_texts(project, ".//cac:RealizedLocation/cbc:CountrySubentityCode")
+    if values:
+        return values
+    return _extract_texts(project, ".//cbc:CountrySubentityCode")
+
+
+def _extract_buyer_city(contracting_party: Any | None) -> str | None:
+    return _first_text(
+        contracting_party,
+        [
+            ".//cac:PostalAddress/cbc:CityName",
+            ".//cbc:CityName",
+        ],
+    )
+
+
+def _extract_winner_name(tender_result: Any | None) -> str | None:
+    return normalize_text(
+        _first_text(
+            tender_result,
+            [
+                ".//cac:WinningParty/cac:PartyName/cbc:Name",
+                ".//cac:WinningParty/cac:PartyLegalEntity/cbc:RegistrationName",
+            ],
+        )
+    )
+
+
+def _extract_winner_tax_id(tender_result: Any | None) -> str | None:
+    winning_party = _find_first(tender_result, ".//cac:WinningParty")
+    return _extract_party_identifier(winning_party)
+
+
+def _extract_currency(*roots: Any | None) -> str | None:
+    for root in roots:
+        if root is None:
+            continue
+        for element in root.iter():
+            raw_currency = element.attrib.get("currencyID")
+            currency = normalize_text(str(raw_currency)) if raw_currency is not None else None
+            if currency:
+                return currency.upper()
+    return None
+
+
+def _compose_summary(
+    *,
+    atom_summary: str | None,
+    contract_folder: str | None,
+    buyer_name: str | None,
+    value: float | None,
+    status_text: str | None,
+    procedure_type: str | None,
+    contract_type: str | None,
+    region: str | None,
+) -> str | None:
+    parts = []
+    if atom_summary:
+        parts.append(atom_summary)
+    if contract_folder:
+        parts.append(f"Id licitación: {contract_folder}")
+    if buyer_name:
+        parts.append(f"Órgano de Contratación: {buyer_name}")
+    if value is not None:
+        parts.append(f"Importe: {value:g} EUR")
+    if status_text:
+        parts.append(f"Estado: {status_text}")
+    if procedure_type:
+        parts.append(f"Procedimiento: {procedure_type}")
+    if contract_type:
+        parts.append(f"Tipo de contrato: {contract_type}")
+    if region:
+        parts.append(f"Ubicación: {region}")
+    return "; ".join(dict.fromkeys(parts)) or None
+
+
 def _extract_texts(root: Any | None, xpath: str) -> list[str]:
     if root is None:
         return []
@@ -445,7 +598,12 @@ def _text(root: Any, xpath: str) -> str | None:
 
 
 def _namespaces() -> dict[str, Any]:
-    return {"cac": CAC_NS, "cbc": CBC_NS}
+    return {
+        "cac": CAC_NS,
+        "cbc": CBC_NS,
+        "cac-place-ext": CAC_PLACE_EXT_NS,
+        "cbc-place-ext": CBC_PLACE_EXT_NS,
+    }
 
 
 def _local_name(tag: str) -> str:

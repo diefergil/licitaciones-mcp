@@ -19,6 +19,7 @@ from licitaciones_mcp.core.normalization import fold_text
 DEFAULT_OCID_PREFIX = "ocds-licitaciones-mcp"
 
 _TENDER_STATUS_MAP: dict[TenderStatus, str] = {
+    TenderStatus.PLANNED: "planning",
     TenderStatus.OPEN: "active",
     TenderStatus.CLOSED: "complete",
     TenderStatus.AWARDED: "complete",

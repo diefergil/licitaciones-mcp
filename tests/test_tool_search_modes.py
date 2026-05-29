@@ -19,6 +19,7 @@ from licitaciones_mcp.server.tools import TenderToolService
 class _FakeDatabase:
     def __init__(self, *, pgvector_available: bool = True) -> None:
         self.keyword_calls = 0
+        self.facet_calls = 0
         self._pgvector_available = pgvector_available
         self.last_filters: TenderFilters | None = None
 
@@ -39,6 +40,11 @@ class _FakeDatabase:
 
     async def pgvector_available(self) -> bool:
         return self._pgvector_available
+
+    async def list_filter_options(self, filters: TenderFilters, *, limit: int) -> dict[str, object]:
+        self.facet_calls += 1
+        self.last_filters = filters
+        return {"count": 0, "filters": filters.model_dump(mode="json"), "limit": limit}
 
     async def list_source_fetch_runs(self, **_kwargs: object) -> list[object]:
         raise AssertionError("invalid status should not hit the database")
@@ -156,6 +162,24 @@ async def test_search_returns_structured_error_for_invalid_query_mode() -> None:
     assert result["count"] == 0
     assert result["details"][0]["loc"] == ["query_mode"]
     assert database.keyword_calls == 0
+
+
+@pytest.mark.asyncio
+async def test_list_filter_options_normalizes_new_filter_fields() -> None:
+    database = _FakeDatabase()
+    service = TenderToolService(Settings(), database)  # type: ignore[arg-type]
+
+    result = await service.list_filter_options(
+        cpv_prefixes=["72*"],
+        dataset_kinds=["LICITACIONES"],
+        limit=25,
+    )
+
+    assert result["limit"] == 25
+    assert database.facet_calls == 1
+    assert database.last_filters is not None
+    assert database.last_filters.cpv_prefixes == ["72"]
+    assert database.last_filters.dataset_kinds == ["licitaciones"]
 
 
 @pytest.mark.asyncio

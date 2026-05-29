@@ -12,6 +12,7 @@ from licitaciones_mcp.core.models import (
     TenderDocument,
     TenderFilters,
     TenderSource,
+    TenderStatus,
 )
 from licitaciones_mcp.storage.database import TenderDatabase
 
@@ -65,6 +66,59 @@ async def test_search_applies_country_filter(database: TenderDatabase) -> None:
     results = await database.search_tenders(TenderFilters(country="FR", limit=10))
 
     assert [result.tender.external_id for result in results] == ["country-fr"]
+
+
+async def test_search_applies_prefix_filters_and_facets(database: TenderDatabase) -> None:
+    """CPV/NUTS prefixes and dataset kind filters should be enforced in Postgres."""
+
+    tic_madrid = await _make_tender("filters-tic-madrid", "Servicios TIC Madrid")
+    tic_madrid.status = TenderStatus.OPEN
+    tic_madrid.cpv_codes = ["72000000"]
+    tic_madrid.nuts_codes = ["ES300"]
+    tic_madrid.region = "Comunidad de Madrid"
+    tic_madrid.notice_type = "PUB"
+    tic_madrid.contract_type = "2"
+    tic_madrid.procedure_type = "1"
+    tic_madrid.source_metadata = {"dataset_kind": "licitaciones"}
+
+    obras_valencia = await _make_tender("filters-obras-valencia", "Obras Valencia")
+    obras_valencia.status = TenderStatus.CLOSED
+    obras_valencia.cpv_codes = ["45000000"]
+    obras_valencia.nuts_codes = ["ES523"]
+    obras_valencia.region = "Comunitat Valenciana"
+    obras_valencia.notice_type = "RES"
+    obras_valencia.contract_type = "3"
+    obras_valencia.procedure_type = "1"
+    obras_valencia.source_metadata = {"dataset_kind": "menores"}
+
+    await database.upsert_tenders([tic_madrid, obras_valencia])
+
+    results = await database.search_tenders(
+        TenderFilters(
+            cpv_prefixes=["72"],
+            nuts_codes=["ES3"],
+            dataset_kinds=["licitaciones"],
+            only_open=True,
+            limit=10,
+        )
+    )
+    assert [result.tender.external_id for result in results] == ["filters-tic-madrid"]
+
+    facets = await database.list_filter_options(TenderFilters(cpv_prefixes=["72"]), limit=10)
+
+    assert facets["count"] == 1
+    assert facets["ranges"]["deadline_at"]["min"] is not None
+    assert facets["facets"]["statuses"] == [{"value": "open", "label": "Abierta", "count": 1}]
+    assert facets["facets"]["cpv_prefixes"] == [
+        {
+            "value": "72",
+            "label": "Servicios TI: consultoría, software, internet y apoyo",
+            "count": 1,
+        }
+    ]
+    assert facets["facets"]["dataset_kinds"] == [
+        {"value": "licitaciones", "label": "Licitaciones sin menores", "count": 1}
+    ]
 
 
 async def test_upsert_embeddings_rejects_mixed_dimensions(database: TenderDatabase) -> None:

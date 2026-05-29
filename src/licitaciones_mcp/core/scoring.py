@@ -7,7 +7,11 @@ from math import sqrt
 from typing import Any
 
 from licitaciones_mcp.core.models import Tender, TenderFilters, TenderSearchResult, TenderStatus
-from licitaciones_mcp.core.normalization import fold_text, normalize_cpv_codes
+from licitaciones_mcp.core.normalization import (
+    fold_text,
+    normalize_cpv_codes,
+    normalize_cpv_prefixes,
+)
 
 
 def cosine_similarity(left: list[float], right: list[float]) -> float:
@@ -37,6 +41,10 @@ def tender_matches_filters(tender: Tender, filters: TenderFilters) -> bool:
 
     wanted_cpvs = normalize_cpv_codes(filters.cpv_codes)
     if wanted_cpvs and not _cpv_overlaps(tender.cpv_codes, wanted_cpvs):
+        return False
+
+    wanted_cpv_prefixes = normalize_cpv_prefixes(filters.cpv_prefixes)
+    if wanted_cpv_prefixes and not _cpv_prefix_overlaps(tender.cpv_codes, wanted_cpv_prefixes):
         return False
 
     wanted_nuts = [fold_text(code) for code in filters.nuts_codes]
@@ -69,6 +77,11 @@ def tender_matches_filters(tender: Tender, filters: TenderFilters) -> bool:
         return False
     if filters.notice_types and not _text_field_matches(tender.notice_type, filters.notice_types):
         return False
+    if filters.dataset_kinds:
+        dataset_kind = fold_text(str(tender.source_metadata.get("dataset_kind", "")))
+        wanted_dataset_kinds = [fold_text(kind) for kind in filters.dataset_kinds]
+        if not dataset_kind or dataset_kind not in wanted_dataset_kinds:
+            return False
 
     if filters.published_from and (
         tender.published_at is None or tender.published_at.date() < filters.published_from
@@ -119,6 +132,11 @@ def score_tender(
         if cpv_score:
             score += cpv_score * 35
             reasons.append("cpv_match")
+
+    wanted_cpv_prefixes = normalize_cpv_prefixes(filters.cpv_prefixes)
+    if wanted_cpv_prefixes and _cpv_prefix_overlaps(tender.cpv_codes, wanted_cpv_prefixes):
+        score += 18
+        reasons.append("cpv_prefix_match")
 
     if filters.regions and tender.region:
         score += 10
@@ -177,6 +195,12 @@ def _keyword_score(tender: Tender, text: str | None) -> float:
 
 def _cpv_overlaps(tender_cpvs: list[str], wanted_cpvs: list[str]) -> bool:
     return _cpv_score(tender_cpvs, wanted_cpvs) > 0
+
+
+def _cpv_prefix_overlaps(tender_cpvs: list[str], wanted_prefixes: list[str]) -> bool:
+    return any(
+        tender_cpv.startswith(prefix) for tender_cpv in tender_cpvs for prefix in wanted_prefixes
+    )
 
 
 def _cpv_score(tender_cpvs: list[str], wanted_cpvs: list[str]) -> float:
