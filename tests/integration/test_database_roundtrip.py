@@ -104,6 +104,17 @@ async def test_search_applies_prefix_filters_and_facets(database: TenderDatabase
     )
     assert [result.tender.external_id for result in results] == ["filters-tic-madrid"]
 
+    mixed_nuts_results = await database.search_tenders(
+        TenderFilters(nuts_codes=["", " ES3 "], limit=10)
+    )
+    assert [result.tender.external_id for result in mixed_nuts_results] == ["filters-tic-madrid"]
+
+    blank_nuts_results = await database.search_tenders(TenderFilters(nuts_codes=[""], limit=10))
+    assert {result.tender.external_id for result in blank_nuts_results} == {
+        "filters-tic-madrid",
+        "filters-obras-valencia",
+    }
+
     facets = await database.list_filter_options(TenderFilters(cpv_prefixes=["72"]), limit=10)
 
     assert facets["count"] == 1

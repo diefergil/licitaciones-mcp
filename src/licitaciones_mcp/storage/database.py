@@ -698,12 +698,15 @@ class TenderDatabase:
             statement = statement.where(
                 _json_array_prefix_clause("cpv_codes", "__cpv_prefix", cpv_prefixes)
             )
-        if filters.nuts_codes:
+        nuts_prefixes = [
+            normalized.upper() for item in filters.nuts_codes if (normalized := str(item).strip())
+        ]
+        if nuts_prefixes:
             statement = statement.where(
                 _json_array_prefix_clause(
                     "nuts_codes",
                     "__nuts_prefix",
-                    [item.upper() for item in filters.nuts_codes],
+                    nuts_prefixes,
                 )
             )
         if filters.regions:

@@ -91,6 +91,15 @@ def test_unknown_contract_type_omits_main_procurement_category() -> None:
     assert "mainProcurementCategory" not in release["tender"]
 
 
+def test_planned_status_maps_to_valid_ocds_status() -> None:
+    tender = _make_tender()
+    tender.status = TenderStatus.PLANNED
+
+    release = tender_to_release(tender)
+
+    assert release["tender"]["status"] == "planned"
+
+
 def test_party_identifier_vat_scheme_uses_tender_country() -> None:
     tender = _make_tender()
     tender.country = "FR"
