@@ -660,7 +660,12 @@ def _invalid_filters_response(
     }
     if collection is not None:
         response["count"] = 0
-        response[collection] = []
+        if collection == "facets":
+            response["facets"] = {}
+            response["catalogs"] = {}
+            response["ranges"] = {}
+        else:
+            response[collection] = []
     return response
 
 

@@ -183,6 +183,22 @@ async def test_list_filter_options_normalizes_new_filter_fields() -> None:
 
 
 @pytest.mark.asyncio
+async def test_list_filter_options_invalid_filters_keep_facet_shape() -> None:
+    database = _FakeDatabase()
+    service = TenderToolService(Settings(), database)  # type: ignore[arg-type]
+
+    result = await service.list_filter_options(country="Atlantis")
+
+    assert result["error"] == "invalid_filters"
+    assert result["count"] == 0
+    assert result["facets"] == {}
+    assert result["catalogs"] == {}
+    assert result["ranges"] == {}
+    assert result["details"][0]["loc"] == ["country"]
+    assert database.facet_calls == 0
+
+
+@pytest.mark.asyncio
 async def test_search_strips_empty_nuts_filters() -> None:
     database = _FakeDatabase()
     service = TenderToolService(Settings(), database)  # type: ignore[arg-type]
