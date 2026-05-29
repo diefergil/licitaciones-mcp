@@ -12,6 +12,7 @@ from typing import Any
 
 from defusedxml import ElementTree as ET
 
+from licitaciones_mcp.core.catalogs import PLACSP_NOTICE_STATUS
 from licitaciones_mcp.core.dedupe import attach_dedupe_key
 from licitaciones_mcp.core.models import (
     SourceFetchResult,
@@ -19,8 +20,10 @@ from licitaciones_mcp.core.models import (
     TenderDocument,
     TenderFilters,
     TenderSource,
+    TenderStatus,
 )
 from licitaciones_mcp.core.normalization import (
+    fold_text,
     normalize_cpv_codes,
     normalize_region,
     normalize_status,
@@ -39,6 +42,14 @@ CAC_PLACE_EXT_NS = "urn:dgpe:names:draft:codice-place-ext:schema:xsd:CommonAggre
 CBC_PLACE_EXT_NS = "urn:dgpe:names:draft:codice-place-ext:schema:xsd:CommonBasicComponents-2"
 PLACSP_BASE = "https://contrataciondelsectorpublico.gob.es"
 DEFAULT_USER_AGENT = default_user_agent()
+_PLACSP_NOTICE_CODES = set(PLACSP_NOTICE_STATUS)
+_STATUS_NOTICE_FALLBACKS = {
+    TenderStatus.PLANNED: "PRE",
+    TenderStatus.OPEN: "PUB",
+    TenderStatus.CLOSED: "RES",
+    TenderStatus.AWARDED: "ADJ",
+    TenderStatus.CANCELLED: "ANUL",
+}
 
 
 class PLACSPDatasetKind(StrEnum):
@@ -280,6 +291,7 @@ def _parse_entry(entry: Any, *, source_metadata: dict[str, Any]) -> Tender | Non
     buyer_tax_id = _extract_party_identifier(contracting_party)
     status_text = _first_text(entry, [".//cbc:ContractFolderStatusCode", ".//cbc:StatusCode"])
     status = normalize_status(status_text)
+    notice_type = _normalize_placsp_notice_type(status_text)
     published = (
         _extract_publication_date(entry)
         or parse_datetime(_text(entry, "atom:published"))
@@ -355,7 +367,7 @@ def _parse_entry(entry: Any, *, source_metadata: dict[str, Any]) -> Tender | Non
         region=region,
         procedure_type=procedure_type,
         contract_type=contract_type,
-        notice_type=status_text,
+        notice_type=notice_type,
         estimated_value=value,
         award_value=award_value,
         currency=currency,
@@ -378,6 +390,34 @@ def _entry_links(entry: Any) -> list[str]:
         if href and href not in links:
             links.append(href)
     return links
+
+
+def _normalize_placsp_notice_type(value: str | None) -> str | None:
+    """Return the canonical PLACSP notice/status code when it can be inferred."""
+
+    normalized = normalize_text(value)
+    if not normalized:
+        return None
+    code = normalized.upper()
+    if code in _PLACSP_NOTICE_CODES:
+        return code
+
+    folded = fold_text(normalized)
+    if any(term in folded for term in ("desierta", "desierto")):
+        return "DES"
+    if any(term in folded for term in ("anulada", "cancel", "desist", "renuncia")):
+        return "ANUL"
+    if any(term in folded for term in ("adjudic", "awarded")):
+        return "ADJ"
+    if any(term in folded for term in ("evaluacion", "pendiente de adjudic")):
+        return "EV"
+    if any(term in folded for term in ("resuelta", "finalizada", "cerrad", "closed")):
+        return "RES"
+    if any(term in folded for term in ("anuncio previo", "prior information")):
+        return "PRE"
+    if any(term in folded for term in ("publicada", "abierta", "open", "licitacion")):
+        return "PUB"
+    return _STATUS_NOTICE_FALLBACKS.get(normalize_status(normalized))
 
 
 def _extract_cpvs(project: Any | None) -> list[str]:

@@ -568,13 +568,13 @@ class TenderToolService:
                 for item in nuts_codes or []
                 if (normalized := normalize_text(str(item)))
             ],
-            regions=[item for item in regions or [] if item],
+            regions=_normalize_text_list(regions),
             buyer=normalize_text(buyer),
             statuses=_parse_statuses(statuses),
             sources=_parse_sources(sources),
-            procedure_types=[item for item in procedure_types or [] if item],
-            contract_types=[item for item in contract_types or [] if item],
-            notice_types=[item for item in notice_types or [] if item],
+            procedure_types=_normalize_text_list(procedure_types),
+            contract_types=_normalize_text_list(contract_types),
+            notice_types=_normalize_text_list(notice_types, uppercase=True),
             dataset_kinds=[
                 normalized.lower()
                 for item in dataset_kinds or []
@@ -605,6 +605,18 @@ def _parse_statuses(values: list[str] | None) -> list[TenderStatus]:
             continue
         if status not in result:
             result.append(status)
+    return result
+
+
+def _normalize_text_list(values: list[str] | None, *, uppercase: bool = False) -> list[str]:
+    """Normalize list-style text filters and drop empty values."""
+
+    result: list[str] = []
+    for item in values or []:
+        normalized = normalize_text(str(item))
+        if not normalized:
+            continue
+        result.append(normalized.upper() if uppercase else normalized)
     return result
 
 

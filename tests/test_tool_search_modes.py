@@ -194,6 +194,25 @@ async def test_search_strips_empty_nuts_filters() -> None:
 
 
 @pytest.mark.asyncio
+async def test_search_strips_empty_structured_text_filters() -> None:
+    database = _FakeDatabase()
+    service = TenderToolService(Settings(), database)  # type: ignore[arg-type]
+
+    await service.search_tenders(
+        regions=["   ", " Madrid "],
+        procedure_types=["", " 1 "],
+        contract_types=[" ", " 2 "],
+        notice_types=[" ", " pub "],
+    )
+
+    assert database.last_filters is not None
+    assert database.last_filters.regions == ["Madrid"]
+    assert database.last_filters.procedure_types == ["1"]
+    assert database.last_filters.contract_types == ["2"]
+    assert database.last_filters.notice_types == ["PUB"]
+
+
+@pytest.mark.asyncio
 async def test_match_tenders_accepts_nuts_codes_from_profile() -> None:
     database = _FakeDatabase()
     service = TenderToolService(Settings(), database)  # type: ignore[arg-type]

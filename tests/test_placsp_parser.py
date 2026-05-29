@@ -82,6 +82,32 @@ def test_parse_placsp_official_status_codes(code: str, expected: TenderStatus) -
     assert tender.notice_type == code
 
 
+def test_parse_placsp_human_status_keeps_canonical_notice_type() -> None:
+    xml_text = """<?xml version="1.0" encoding="UTF-8"?>
+<entry xmlns="http://www.w3.org/2005/Atom"
+       xmlns:cac="urn:dgpe:names:draft:codice:schema:xsd:CommonAggregateComponents-2"
+       xmlns:cbc="urn:dgpe:names:draft:codice:schema:xsd:CommonBasicComponents-2">
+  <id>human-status-id</id>
+  <title>Licitacion publicada</title>
+  <updated>2026-05-17T08:00:00Z</updated>
+  <cac:ContractFolderStatus>
+    <cbc:ContractFolderID>human-status-folder</cbc:ContractFolderID>
+    <cbc:ContractFolderStatusCode>Publicada</cbc:ContractFolderStatusCode>
+    <cac:ProcurementProject>
+      <cac:RequiredCommodityClassification>
+        <cbc:ItemClassificationCode>72000000</cbc:ItemClassificationCode>
+      </cac:RequiredCommodityClassification>
+    </cac:ProcurementProject>
+  </cac:ContractFolderStatus>
+</entry>"""
+
+    [tender] = parse_placsp_atom(xml_text)
+
+    assert tender.status == TenderStatus.OPEN
+    assert tender.notice_type == "PUB"
+    assert tender.raw["status_code"] == "Publicada"
+
+
 def test_parse_placsp_summary_uses_source_currency() -> None:
     xml_text = """<?xml version="1.0" encoding="UTF-8"?>
 <entry xmlns="http://www.w3.org/2005/Atom"
