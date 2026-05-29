@@ -171,7 +171,7 @@ async def test_list_filter_options_normalizes_new_filter_fields() -> None:
 
     result = await service.list_filter_options(
         cpv_prefixes=["72*"],
-        dataset_kinds=["LICITACIONES"],
+        dataset_kinds=[" LICITACIONES "],
         limit=25,
     )
 

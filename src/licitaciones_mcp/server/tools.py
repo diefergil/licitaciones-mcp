@@ -567,7 +567,11 @@ class TenderToolService:
             procedure_types=[item for item in procedure_types or [] if item],
             contract_types=[item for item in contract_types or [] if item],
             notice_types=[item for item in notice_types or [] if item],
-            dataset_kinds=[item.lower() for item in dataset_kinds or [] if item],
+            dataset_kinds=[
+                normalized.lower()
+                for item in dataset_kinds or []
+                if (normalized := normalize_text(str(item)))
+            ],
             only_open=only_open,
             published_from=parse_date(published_from),
             published_to=parse_date(published_to),

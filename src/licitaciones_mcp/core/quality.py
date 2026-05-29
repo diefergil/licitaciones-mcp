@@ -14,6 +14,7 @@ from licitaciones_mcp.core.models import (
     TenderQualityIssue,
     TenderQualitySeverity,
     TenderSource,
+    TenderStatus,
 )
 from licitaciones_mcp.core.normalization import normalize_text
 
@@ -124,7 +125,7 @@ def validate_tender(tender: Tender) -> list[TenderQualityIssue]:
                 field="deadline_at",
             )
         )
-    if tender.status.value == "open" and tender.deadline_at is None:
+    if tender.status == TenderStatus.OPEN and tender.deadline_at is None:
         issues.append(
             TenderQualityIssue(
                 code="open_without_deadline",
