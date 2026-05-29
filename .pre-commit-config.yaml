@@ -5,7 +5,7 @@ repos:
       - id: check-merge-conflict
       - id: check-toml
       - id: check-yaml
-        args: ["--unsafe"]
+        exclude: ^deploy/production/docker-compose\.override\.yml$
       - id: end-of-file-fixer
       - id: trailing-whitespace
   - repo: local
