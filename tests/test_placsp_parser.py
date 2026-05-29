@@ -82,6 +82,35 @@ def test_parse_placsp_official_status_codes(code: str, expected: TenderStatus) -
     assert tender.notice_type == code
 
 
+def test_parse_placsp_summary_uses_source_currency() -> None:
+    xml_text = """<?xml version="1.0" encoding="UTF-8"?>
+<entry xmlns="http://www.w3.org/2005/Atom"
+       xmlns:cac="urn:dgpe:names:draft:codice:schema:xsd:CommonAggregateComponents-2"
+       xmlns:cbc="urn:dgpe:names:draft:codice:schema:xsd:CommonBasicComponents-2">
+  <id>currency-id</id>
+  <title>Licitacion moneda</title>
+  <updated>2026-05-17T08:00:00Z</updated>
+  <cac:ContractFolderStatus>
+    <cbc:ContractFolderID>currency-folder</cbc:ContractFolderID>
+    <cbc:ContractFolderStatusCode>PUB</cbc:ContractFolderStatusCode>
+    <cac:ProcurementProject>
+      <cac:BudgetAmount>
+        <cbc:EstimatedOverallContractAmount currencyID="USD">1000</cbc:EstimatedOverallContractAmount>
+      </cac:BudgetAmount>
+      <cac:RequiredCommodityClassification>
+        <cbc:ItemClassificationCode>72000000</cbc:ItemClassificationCode>
+      </cac:RequiredCommodityClassification>
+    </cac:ProcurementProject>
+  </cac:ContractFolderStatus>
+</entry>"""
+
+    [tender] = parse_placsp_atom(xml_text)
+
+    assert tender.currency == "USD"
+    assert tender.summary is not None
+    assert "Importe: 1000 USD" in tender.summary
+
+
 def test_build_placsp_monthly_url() -> None:
     url = build_placsp_period_url(PLACSPDatasetKind.LICITACIONES, year=2026, month=5)
 

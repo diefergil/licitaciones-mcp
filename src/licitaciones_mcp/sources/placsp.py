@@ -328,6 +328,7 @@ def _parse_entry(entry: Any, *, source_metadata: dict[str, Any]) -> Tender | Non
         procedure_type=procedure_type,
         contract_type=contract_type,
         region=region,
+        currency=currency,
     )
     raw = {
         "atom_id": external_id,
@@ -527,6 +528,7 @@ def _compose_summary(
     procedure_type: str | None,
     contract_type: str | None,
     region: str | None,
+    currency: str | None,
 ) -> str | None:
     parts = []
     if atom_summary:
@@ -536,7 +538,8 @@ def _compose_summary(
     if buyer_name:
         parts.append(f"Órgano de Contratación: {buyer_name}")
     if value is not None:
-        parts.append(f"Importe: {value:g} EUR")
+        amount_currency = currency or "EUR"
+        parts.append(f"Importe: {value:g} {amount_currency}")
     if status_text:
         parts.append(f"Estado: {status_text}")
     if procedure_type:

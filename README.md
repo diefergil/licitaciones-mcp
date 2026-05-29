@@ -92,6 +92,9 @@ Use `list_filter_options` before creating saved searches or jobs when a client
 needs real local facets. It returns static public catalogs and observed counts
 for statuses, notice types, contract types, procedure types, CPV codes/prefixes,
 NUTS codes, regions, buyers, dataset kinds, sources, and value/date ranges.
+Facets are computed over the newest matching rows up to the response's
+`facet_row_window`; `truncated=true` means the local table has more matching rows
+than the sampled window.
 
 Lexical ranking uses Postgres BM25 by default. The bundled Docker database is
 Postgres 18 with pgvector and `pg_textsearch`; migrations create

@@ -107,6 +107,8 @@ async def test_search_applies_prefix_filters_and_facets(database: TenderDatabase
     facets = await database.list_filter_options(TenderFilters(cpv_prefixes=["72"]), limit=10)
 
     assert facets["count"] == 1
+    assert facets["facet_row_window"] == 5000
+    assert facets["truncated"] is False
     assert facets["ranges"]["deadline_at"]["min"] is not None
     assert facets["facets"]["statuses"] == [{"value": "open", "label": "Abierta", "count": 1}]
     assert facets["facets"]["cpv_prefixes"] == [

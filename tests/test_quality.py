@@ -64,3 +64,22 @@ def test_validate_tender_flags_value_outliers() -> None:
     )
 
     assert "estimated_value_outlier" in {issue.code for issue in validate_tender(tender)}
+
+
+def test_validate_tender_skips_placsp_catalog_checks_for_ted() -> None:
+    tender = Tender(
+        source=TenderSource.TED,
+        external_id="1",
+        title="TED tender",
+        cpv_codes=["72000000"],
+        buyer_name="European buyer",
+        notice_type="TED-NOTICE",
+        contract_type="TED-CONTRACT",
+        procedure_type="TED-PROCEDURE",
+    )
+
+    codes = {issue.code for issue in validate_tender(tender)}
+
+    assert "unknown_notice_type" not in codes
+    assert "unknown_contract_type" not in codes
+    assert "unknown_procedure_type" not in codes

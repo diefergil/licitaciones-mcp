@@ -9,7 +9,12 @@ from licitaciones_mcp.core.catalogs import (
     PLACSP_NOTICE_TYPES,
     PLACSP_PROCEDURE_TYPES,
 )
-from licitaciones_mcp.core.models import Tender, TenderQualityIssue, TenderQualitySeverity
+from licitaciones_mcp.core.models import (
+    Tender,
+    TenderQualityIssue,
+    TenderQualitySeverity,
+    TenderSource,
+)
 from licitaciones_mcp.core.normalization import normalize_text
 
 CPV_CODE_RE = re.compile(r"^\d{8}$")
@@ -150,27 +155,28 @@ def validate_tender(tender: Tender) -> list[TenderQualityIssue]:
             )
         )
 
-    _append_unknown_catalog_issue(
-        issues,
-        value=tender.notice_type,
-        catalog=PLACSP_NOTICE_TYPES,
-        code="unknown_notice_type",
-        field="notice_type",
-    )
-    _append_unknown_catalog_issue(
-        issues,
-        value=tender.contract_type,
-        catalog=PLACSP_CONTRACT_TYPES,
-        code="unknown_contract_type",
-        field="contract_type",
-    )
-    _append_unknown_catalog_issue(
-        issues,
-        value=tender.procedure_type,
-        catalog=PLACSP_PROCEDURE_TYPES,
-        code="unknown_procedure_type",
-        field="procedure_type",
-    )
+    if tender.source == TenderSource.PLACSP:
+        _append_unknown_catalog_issue(
+            issues,
+            value=tender.notice_type,
+            catalog=PLACSP_NOTICE_TYPES,
+            code="unknown_notice_type",
+            field="notice_type",
+        )
+        _append_unknown_catalog_issue(
+            issues,
+            value=tender.contract_type,
+            catalog=PLACSP_CONTRACT_TYPES,
+            code="unknown_contract_type",
+            field="contract_type",
+        )
+        _append_unknown_catalog_issue(
+            issues,
+            value=tender.procedure_type,
+            catalog=PLACSP_PROCEDURE_TYPES,
+            code="unknown_procedure_type",
+            field="procedure_type",
+        )
 
     return issues
 

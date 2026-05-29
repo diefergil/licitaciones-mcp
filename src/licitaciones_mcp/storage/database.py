@@ -74,6 +74,7 @@ from licitaciones_mcp.storage.models import (
 _SEARCH_CANDIDATE_MIN = 200
 _SEARCH_CANDIDATE_MULTIPLIER = 20
 _SEARCH_CANDIDATE_MAX = 5_000
+_FACET_ROW_WINDOW = 5_000
 _SEARCH_VECTOR_EXPR = (
     "to_tsvector('spanish', "
     "coalesce(title, '') || ' ' || "
@@ -840,9 +841,10 @@ class TenderDatabase:
 
         active_filters = filters or TenderFilters(limit=MAX_TENDER_SEARCH_LIMIT)
         facet_limit = max(1, min(limit, 200))
+        row_window = _FACET_ROW_WINDOW
         async with self.session_factory() as session:
             statement = self._apply_structured_filters(
-                select(TenderRecord).options(selectinload(TenderRecord.documents)),
+                select(TenderRecord),
                 active_filters,
             )
             if active_filters.text:
@@ -850,11 +852,16 @@ class TenderDatabase:
                     statement = statement.where(_bm25_match_clause(active_filters.text))
                 else:
                     statement = self._apply_text_filter(statement, active_filters.text)
+            statement = statement.order_by(TenderRecord.published_at.desc().nullslast()).limit(
+                row_window
+            )
             records = (await session.execute(statement)).scalars().all()
 
-        tenders = [_record_to_tender(record) for record in records]
+        tenders = [_record_to_tender(record, include_documents=False) for record in records]
         return {
             "count": len(tenders),
+            "facet_row_window": row_window,
+            "truncated": len(tenders) == row_window,
             "filters": active_filters.model_dump(mode="json"),
             "catalogs": _static_filter_catalogs(),
             "facets": _facet_counts(tenders, limit=facet_limit),
@@ -1397,7 +1404,19 @@ def _document_to_record(document: TenderDocument) -> TenderDocumentRecord:
     )
 
 
-def _record_to_tender(record: TenderRecord) -> Tender:
+def _record_to_tender(record: TenderRecord, *, include_documents: bool = True) -> Tender:
+    documents: list[TenderDocument] = []
+    if include_documents:
+        documents = [
+            TenderDocument(
+                url=document.url,
+                title=document.title,
+                document_type=document.document_type,
+                published_at=document.published_at,
+                metadata=document.extra_metadata,
+            )
+            for document in record.documents
+        ]
     return Tender(
         id=record.id,
         source=TenderSource(record.source),
@@ -1423,16 +1442,7 @@ def _record_to_tender(record: TenderRecord) -> Tender:
         winner_name=record.winner_name,
         winner_tax_id=record.winner_tax_id,
         url=record.url,
-        documents=[
-            TenderDocument(
-                url=document.url,
-                title=document.title,
-                document_type=document.document_type,
-                published_at=document.published_at,
-                metadata=document.extra_metadata,
-            )
-            for document in record.documents
-        ],
+        documents=documents,
         raw=dict(record.raw or {}),
         source_metadata=dict(record.source_metadata or {}),
         quality_issues=[
