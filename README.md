@@ -81,6 +81,18 @@ Do not commit `.env`, local caches, database dumps, downloaded ZIP/XML source da
 
 MCP calls are structured-first. Agents or client applications should interpret user intent and call `search_tenders` with explicit filters such as `text`, `cpv_codes`, `regions`, `buyer`, `statuses`, `sources`, dates, values, and pagination. The server does not run hidden LLM query parsing in the search path.
 
+Lexical ranking uses Postgres BM25 by default. The bundled Docker database is
+Postgres 18 with pgvector and `pg_textsearch`; migrations create
+`idx_tenders_bm25_text`, and `text` searches rank candidates with BM25. Set
+`LICITACIONES_SEARCH_BACKEND=fts` only for explicit development or compatibility
+installs that need the built-in Spanish `tsvector` + `pg_trgm` path.
+`query_mode="hybrid"` combines lexical and pgvector semantic ranks through
+reciprocal rank fusion.
+
+Search scores are retrieval signals from BM25, vector distance, or rank fusion.
+Application-specific matching profiles and business reranking should live in the
+client or integration layer that consumes this server.
+
 Embeddings are disabled by default. They activate only when an embeddings provider and API key are configured.
 
 ```env

@@ -12,6 +12,9 @@ def _default_cache_dir() -> Path:
     return Path.home() / ".cache" / "licitaciones-mcp"
 
 
+SearchBackend = Literal["bm25", "fts"]
+
+
 class Settings(BaseSettings):
     """Application settings loaded from environment variables."""
 
@@ -23,6 +26,7 @@ class Settings(BaseSettings):
         default="postgresql+asyncpg://licitaciones:licitaciones@localhost:55432/licitaciones",
         alias="DATABASE_URL",
     )
+    search_backend: SearchBackend = Field(default="bm25", alias="LICITACIONES_SEARCH_BACKEND")
 
     mcp_host: str = Field(default="127.0.0.1", alias="LICITACIONES_MCP_HOST")
     mcp_port: int = Field(default=8080, alias="LICITACIONES_MCP_PORT")

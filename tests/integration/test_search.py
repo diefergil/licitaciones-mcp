@@ -1,4 +1,4 @@
-"""FTS, semantic, and hybrid search smoke tests."""
+"""BM25, semantic, and hybrid search smoke tests."""
 
 from __future__ import annotations
 
@@ -23,7 +23,7 @@ async def _tender(external_id: str, title: str, summary: str = "") -> Tender:
     )
 
 
-async def test_fts_filters_by_text(database: TenderDatabase) -> None:
+async def test_bm25_filters_by_text(database: TenderDatabase) -> None:
     await database.upsert_tenders(
         [
             await _tender("a", "Mantenimiento instalación solar fotovoltaica"),
@@ -33,20 +33,45 @@ async def test_fts_filters_by_text(database: TenderDatabase) -> None:
     results = await database.search_tenders(TenderFilters(text="solar", limit=10))
     titles = [r.tender.title for r in results]
     assert any("solar" in t.lower() for t in titles)
-    # The unrelated row should be excluded by the FTS/trigram WHERE.
+    # The unrelated row should be excluded by the BM25 WHERE.
     assert not any("mobiliario" in t.lower() for t in titles)
 
 
-async def test_text_filter_keeps_lexical_substring_fallback(database: TenderDatabase) -> None:
-    """Search should keep common singular/plural substring matches visible."""
+async def test_fts_backend_keeps_lexical_substring_fallback(database: TenderDatabase) -> None:
+    """Explicit FTS backend keeps common substring matches visible."""
 
     await database.upsert_tenders(
         [await _tender("plural", "Mantenimiento de instalaciones solares")]
     )
 
-    results = await database.search_tenders(TenderFilters(text="solar", limit=10))
+    fts_database = TenderDatabase(database.database_url, search_backend="fts")
+    try:
+        results = await fts_database.search_tenders(TenderFilters(text="solar", limit=10))
+    finally:
+        await fts_database.close()
 
     assert [result.tender.external_id for result in results] == ["plural"]
+
+
+async def test_bm25_keyword_ranker(database: TenderDatabase) -> None:
+    """BM25 is required in the integration Postgres image."""
+
+    assert await database.bm25_available()
+
+    await database.upsert_tenders(
+        [
+            await _tender("bm25-a", "Mantenimiento solar solar fotovoltaico"),
+            await _tender("bm25-b", "Suministro de mobiliario para colegio"),
+        ]
+    )
+
+    results = await database.search_tenders(TenderFilters(text="solar", limit=10))
+
+    assert results
+    assert results[0].tender.external_id == "bm25-a"
+    assert results[0].score == 1.0
+    assert results[0].reasons == ["bm25_match"]
+    assert all(result.tender.external_id != "bm25-b" for result in results)
 
 
 async def test_hybrid_merges_keyword_and_vector(database: TenderDatabase) -> None:

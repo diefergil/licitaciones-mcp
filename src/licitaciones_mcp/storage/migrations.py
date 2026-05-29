@@ -30,10 +30,12 @@ _T = TypeVar("_T")
 def _make_config(settings: Settings | None = None) -> Config:
     """Build an in-memory Alembic ``Config`` for the configured database."""
 
+    runtime_settings = settings or get_settings()
     cfg = Config()
     cfg.set_main_option("script_location", str(_SCRIPT_LOCATION))
     cfg.set_main_option("version_path_separator", "os")
-    cfg.set_main_option("sqlalchemy.url", (settings or get_settings()).database_url)
+    cfg.set_main_option("sqlalchemy.url", runtime_settings.database_url)
+    cfg.attributes["settings"] = runtime_settings
     return cfg
 
 

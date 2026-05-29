@@ -1,4 +1,7 @@
 .git
+AGENTS.local.md
+.codex
+.agents
 .venv
 .env
 .env.*

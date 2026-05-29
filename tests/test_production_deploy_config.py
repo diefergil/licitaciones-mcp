@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from pathlib import Path
 
-
 ROOT = Path(__file__).resolve().parents[1]
 PRODUCTION_DIR = ROOT / "deploy" / "production"
 
@@ -43,9 +42,7 @@ def test_hardening_script_and_sshd_config_close_default_server_gaps() -> None:
     """The VPS runbook assets should lock down firewall and password SSH."""
 
     harden_script = (PRODUCTION_DIR / "harden-vps.sh").read_text(encoding="utf-8")
-    sshd_config = (PRODUCTION_DIR / "sshd-licitaciones-hardening.conf").read_text(
-        encoding="utf-8"
-    )
+    sshd_config = (PRODUCTION_DIR / "sshd-licitaciones-hardening.conf").read_text(encoding="utf-8")
 
     assert "ufw allow OpenSSH" in harden_script
     assert "ufw allow 80/tcp" in harden_script
@@ -70,6 +67,8 @@ def test_health_check_script_covers_mcp_auth_scheduler_and_source_runs() -> None
     assert "scheduler_heartbeats" in script
     assert "source_fetch_runs" in script
     assert "tender_embeddings" in script
+    assert "pg_textsearch" in script
+    assert "idx_tenders_bm25_text" in script
     assert "raise exception 'database acceptance check failed" in script
     assert "zero successful source runs in the last 24 hours" in script
 
@@ -78,11 +77,14 @@ def test_production_env_template_documents_required_pilot_settings() -> None:
     """The env template should capture non-secret production decisions."""
 
     template = (PRODUCTION_DIR / ".env.production.example").read_text(encoding="utf-8")
+    token_placeholder = "replace-with-generated-token"
+    embeddings_model = "text-embedding-3-small"
 
     assert "LICITACIONES_PUBLIC_HOST=mcp.example.com" in template
-    assert "LICITACIONES_MCP_AUTH_TOKEN=replace-with-generated-token" in template
+    assert "LICITACIONES_SEARCH_BACKEND=bm25" in template
+    assert f"LICITACIONES_MCP_AUTH_TOKEN={token_placeholder}" in template
     assert "LICITACIONES_EMBEDDINGS_PROVIDER=openai" in template
-    assert "LICITACIONES_EMBEDDINGS_MODEL=text-embedding-3-small" in template
+    assert f"LICITACIONES_EMBEDDINGS_MODEL={embeddings_model}" in template
     assert (
         "PLACSP_FEED_URL=https://contrataciondelsectorpublico.gob.es/sindicacion/"
         "sindicacion_643/licitacionesPerfilesContratanteCompleto3.atom"
@@ -106,7 +108,7 @@ def test_docs_stage_acceptance_health_after_initial_ingestion() -> None:
     assert "initial ingestion" in deployment_doc
     assert "Docker Compose 2.24.4" in deployment_doc
     assert "Docker Compose 2.24.4" in production_readme
-    assert 'https://${LICITACIONES_PUBLIC_HOST}/healthz' not in production_readme
+    assert "https://${LICITACIONES_PUBLIC_HOST}/healthz" not in production_readme
     quickstart = readme.split("For internet-facing pilots", maxsplit=1)[1].split(
         "## Ingest Real PLACSP Data", maxsplit=1
     )[0]

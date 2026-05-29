@@ -1,6 +1,12 @@
 services:
   postgres:
-    image: pgvector/pgvector:pg16
+    build:
+      context: .
+      dockerfile: docker/postgres-bm25/Dockerfile
+      args:
+        PG_TEXTSEARCH_VERSION: v1.2.0
+    image: licitaciones-mcp-postgres:pg18-bm25
+    command: ["postgres", "-c", "shared_preload_libraries=pg_textsearch"]
     environment:
       POSTGRES_DB: licitaciones
       POSTGRES_USER: licitaciones
@@ -24,6 +30,7 @@ services:
         required: false
     environment:
       DATABASE_URL: postgresql+asyncpg://licitaciones:${POSTGRES_PASSWORD:-change-me-before-deploy}@postgres:5432/licitaciones
+      LICITACIONES_SEARCH_BACKEND: ${LICITACIONES_SEARCH_BACKEND:-bm25}
     depends_on:
       postgres:
         condition: service_healthy
@@ -38,6 +45,7 @@ services:
         required: false
     environment:
       DATABASE_URL: postgresql+asyncpg://licitaciones:${POSTGRES_PASSWORD:-change-me-before-deploy}@postgres:5432/licitaciones
+      LICITACIONES_SEARCH_BACKEND: ${LICITACIONES_SEARCH_BACKEND:-bm25}
     ports:
       - "8080:8080"
     depends_on:
@@ -56,6 +64,7 @@ services:
         required: false
     environment:
       DATABASE_URL: postgresql+asyncpg://licitaciones:${POSTGRES_PASSWORD:-change-me-before-deploy}@postgres:5432/licitaciones
+      LICITACIONES_SEARCH_BACKEND: ${LICITACIONES_SEARCH_BACKEND:-bm25}
     depends_on:
       postgres:
         condition: service_healthy
