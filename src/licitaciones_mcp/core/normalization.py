@@ -10,6 +10,7 @@ from decimal import Decimal, InvalidOperation
 from licitaciones_mcp.core.models import TenderStatus
 
 CPV_RE = re.compile(r"\b(\d{8})(?:-\d)?\b")
+CPV_PREFIX_RE = re.compile(r"^\d{2,8}$")
 
 
 def normalize_text(value: str | None) -> str | None:
@@ -53,6 +54,34 @@ def normalize_cpv_codes(values: list[str] | str | None) -> list[str]:
         if code and code not in seen:
             seen.add(code)
             result.append(code)
+    return result
+
+
+def normalize_cpv_prefix(value: str) -> str | None:
+    """Return a 2-8 digit CPV prefix suitable for family/sector filters."""
+
+    normalized = str(value).strip().replace("*", "")
+    if normalized.endswith(".0"):
+        normalized = normalized[:-2]
+    normalized = "".join(char for char in normalized if char.isdigit())
+    if not CPV_PREFIX_RE.fullmatch(normalized):
+        return None
+    return normalized
+
+
+def normalize_cpv_prefixes(values: list[str] | str | None) -> list[str]:
+    """Normalize a list or comma-separated string of CPV prefixes."""
+
+    if values is None:
+        return []
+    raw_values = values.split(",") if isinstance(values, str) else values
+    seen: set[str] = set()
+    result: list[str] = []
+    for raw in raw_values:
+        prefix = normalize_cpv_prefix(str(raw))
+        if prefix and prefix not in seen:
+            seen.add(prefix)
+            result.append(prefix)
     return result
 
 
@@ -123,6 +152,18 @@ def normalize_status(value: str | None) -> TenderStatus:
     folded = fold_text(value)
     if not folded:
         return TenderStatus.UNKNOWN
+    if folded in {"pre"}:
+        return TenderStatus.PLANNED
+    if folded in {"pub"}:
+        return TenderStatus.OPEN
+    if folded in {"ev", "res", "des"}:
+        return TenderStatus.CLOSED
+    if folded in {"adj"}:
+        return TenderStatus.AWARDED
+    if folded in {"anul"}:
+        return TenderStatus.CANCELLED
+    if any(term in folded for term in ("anuncio previo", "prior information")):
+        return TenderStatus.PLANNED
     if any(term in folded for term in ("anulada", "cancel", "desist", "renuncia")):
         return TenderStatus.CANCELLED
     if any(term in folded for term in ("adjudic", "awarded")):

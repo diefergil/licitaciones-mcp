@@ -4,7 +4,19 @@ from __future__ import annotations
 
 import re
 
-from licitaciones_mcp.core.models import Tender, TenderQualityIssue, TenderQualitySeverity
+from licitaciones_mcp.core.catalogs import (
+    PLACSP_CONTRACT_TYPES,
+    PLACSP_NOTICE_TYPES,
+    PLACSP_PROCEDURE_TYPES,
+)
+from licitaciones_mcp.core.models import (
+    Tender,
+    TenderQualityIssue,
+    TenderQualitySeverity,
+    TenderSource,
+    TenderStatus,
+)
+from licitaciones_mcp.core.normalization import normalize_text
 
 CPV_CODE_RE = re.compile(r"^\d{8}$")
 NUTS_CODE_RE = re.compile(r"^[A-Z]{2}[A-Z0-9]{1,3}$")
@@ -92,6 +104,14 @@ def validate_tender(tender: Tender) -> list[TenderQualityIssue]:
                 field="estimated_value",
             )
         )
+    if tender.estimated_value is not None and tender.estimated_value > 50_000_000:
+        issues.append(
+            TenderQualityIssue(
+                code="estimated_value_outlier",
+                message="Estimated value is unusually high.",
+                field="estimated_value",
+            )
+        )
 
     if (
         tender.published_at is not None
@@ -102,6 +122,14 @@ def validate_tender(tender: Tender) -> list[TenderQualityIssue]:
             TenderQualityIssue(
                 code="deadline_before_publication",
                 message="Deadline is earlier than publication date.",
+                field="deadline_at",
+            )
+        )
+    if tender.status == TenderStatus.OPEN and tender.deadline_at is None:
+        issues.append(
+            TenderQualityIssue(
+                code="open_without_deadline",
+                message="Open tender has no submission deadline.",
                 field="deadline_at",
             )
         )
@@ -128,4 +156,46 @@ def validate_tender(tender: Tender) -> list[TenderQualityIssue]:
             )
         )
 
+    if tender.source == TenderSource.PLACSP:
+        _append_unknown_catalog_issue(
+            issues,
+            value=tender.notice_type,
+            catalog=PLACSP_NOTICE_TYPES,
+            code="unknown_notice_type",
+            field="notice_type",
+        )
+        _append_unknown_catalog_issue(
+            issues,
+            value=tender.contract_type,
+            catalog=PLACSP_CONTRACT_TYPES,
+            code="unknown_contract_type",
+            field="contract_type",
+        )
+        _append_unknown_catalog_issue(
+            issues,
+            value=tender.procedure_type,
+            catalog=PLACSP_PROCEDURE_TYPES,
+            code="unknown_procedure_type",
+            field="procedure_type",
+        )
+
     return issues
+
+
+def _append_unknown_catalog_issue(
+    issues: list[TenderQualityIssue],
+    *,
+    value: str | None,
+    catalog: dict[str, str],
+    code: str,
+    field: str,
+) -> None:
+    normalized = (normalize_text(value) or "").upper()
+    if normalized and normalized not in catalog:
+        issues.append(
+            TenderQualityIssue(
+                code=code,
+                message=f"Unknown source code for {field}: {value}.",
+                field=field,
+            )
+        )

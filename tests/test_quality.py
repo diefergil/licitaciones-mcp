@@ -1,6 +1,6 @@
 from datetime import UTC, datetime
 
-from licitaciones_mcp.core.models import Tender, TenderSource
+from licitaciones_mcp.core.models import Tender, TenderSource, TenderStatus
 from licitaciones_mcp.core.quality import (
     is_valid_cpv_code,
     is_valid_nuts_code,
@@ -30,3 +30,56 @@ def test_validate_tender_flags_invalid_dates_and_missing_cpv() -> None:
 
     assert "missing_cpv" in codes
     assert "deadline_before_publication" in codes
+
+
+def test_validate_tender_flags_open_without_deadline_and_unknown_codes() -> None:
+    tender = Tender(
+        source=TenderSource.PLACSP,
+        external_id="1",
+        title="Open tender",
+        status=TenderStatus.OPEN,
+        cpv_codes=["72000000"],
+        buyer_name="Ayuntamiento de Madrid",
+        notice_type="NOPE",
+        contract_type="NOPE",
+        procedure_type="NOPE",
+    )
+
+    codes = {issue.code for issue in validate_tender(tender)}
+
+    assert "open_without_deadline" in codes
+    assert "unknown_notice_type" in codes
+    assert "unknown_contract_type" in codes
+    assert "unknown_procedure_type" in codes
+
+
+def test_validate_tender_flags_value_outliers() -> None:
+    tender = Tender(
+        source=TenderSource.PLACSP,
+        external_id="1",
+        title="Large tender",
+        cpv_codes=["72000000"],
+        buyer_name="Ayuntamiento de Madrid",
+        estimated_value=100_000_000,
+    )
+
+    assert "estimated_value_outlier" in {issue.code for issue in validate_tender(tender)}
+
+
+def test_validate_tender_skips_placsp_catalog_checks_for_ted() -> None:
+    tender = Tender(
+        source=TenderSource.TED,
+        external_id="1",
+        title="TED tender",
+        cpv_codes=["72000000"],
+        buyer_name="European buyer",
+        notice_type="TED-NOTICE",
+        contract_type="TED-CONTRACT",
+        procedure_type="TED-PROCEDURE",
+    )
+
+    codes = {issue.code for issue in validate_tender(tender)}
+
+    assert "unknown_notice_type" not in codes
+    assert "unknown_contract_type" not in codes
+    assert "unknown_procedure_type" not in codes

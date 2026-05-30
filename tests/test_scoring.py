@@ -74,6 +74,58 @@ def test_structured_source_and_buyer_filters() -> None:
     )
 
 
+def test_cpv_prefix_and_dataset_kind_filters() -> None:
+    tender = Tender(
+        source=TenderSource.PLACSP,
+        external_id="1",
+        title="Servicios TIC",
+        cpv_codes=["72000000"],
+        source_metadata={"dataset_kind": "licitaciones"},
+    )
+
+    assert tender_matches_filters(
+        tender,
+        TenderFilters(cpv_prefixes=["72"], dataset_kinds=["licitaciones"]),
+    )
+    assert not tender_matches_filters(tender, TenderFilters(cpv_prefixes=["45"]))
+    assert not tender_matches_filters(tender, TenderFilters(dataset_kinds=["menores"]))
+
+
+def test_nuts_filter_is_prefix_aware() -> None:
+    tender = Tender(
+        source=TenderSource.PLACSP,
+        external_id="1",
+        title="Madrid",
+        nuts_codes=["ES300"],
+    )
+
+    assert tender_matches_filters(tender, TenderFilters(nuts_codes=["ES3"]))
+    assert not tender_matches_filters(tender, TenderFilters(nuts_codes=["ES5"]))
+
+
+def test_code_filters_are_exact_matches() -> None:
+    tender = Tender(
+        source=TenderSource.PLACSP,
+        external_id="1",
+        title="Contrato codificado",
+        procedure_type="100",
+        contract_type="21",
+        notice_type="PUBLIC",
+    )
+
+    assert tender_matches_filters(
+        tender,
+        TenderFilters(
+            procedure_types=["100"],
+            contract_types=["21"],
+            notice_types=["PUBLIC"],
+        ),
+    )
+    assert not tender_matches_filters(tender, TenderFilters(procedure_types=["1"]))
+    assert not tender_matches_filters(tender, TenderFilters(contract_types=["2"]))
+    assert not tender_matches_filters(tender, TenderFilters(notice_types=["PUB"]))
+
+
 def test_tender_filters_reject_unbounded_offsets() -> None:
     with pytest.raises(ValidationError):
         TenderFilters(offset=MAX_TENDER_SEARCH_OFFSET + 1)

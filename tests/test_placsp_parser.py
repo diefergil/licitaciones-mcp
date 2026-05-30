@@ -1,6 +1,8 @@
 from pathlib import Path
 
-from licitaciones_mcp.core.models import TenderSource, TenderStatus
+import pytest
+
+from licitaciones_mcp.core.models import PublicTender, TenderSource, TenderStatus
 from licitaciones_mcp.sources.placsp import (
     DEFAULT_USER_AGENT,
     PLACSPDatasetKind,
@@ -22,9 +24,144 @@ def test_parse_placsp_atom_fixture() -> None:
     assert tender.buyer_name == "Ayuntamiento de Valencia"
     assert tender.buyer_tax_id == "P4625200J"
     assert tender.cpv_codes == ["09332000"]
+    assert tender.nuts_codes == ["ES523"]
     assert tender.estimated_value == 125000.50
+    assert tender.deadline_at is not None
+    assert tender.deadline_at.isoformat().startswith("2026-06-15T14:00:00")
     assert tender.region == "Comunitat Valenciana"
+    assert tender.procedure_type == "1"
+    assert tender.contract_type == "2"
+    assert tender.notice_type == "PUB"
+    assert tender.currency == "EUR"
     assert tender.dedupe_key == "placsp:2026/123"
+    public = PublicTender.from_tender(tender)
+    assert public.status_label == "Abierta"
+    assert public.notice_type_label == "En plazo"
+    assert public.procedure_type_label == "Abierto"
+    assert public.contract_type_label == "Servicios"
+
+
+@pytest.mark.parametrize(
+    ("code", "expected"),
+    [
+        ("PUB", TenderStatus.OPEN),
+        ("EV", TenderStatus.CLOSED),
+        ("ADJ", TenderStatus.AWARDED),
+        ("RES", TenderStatus.CLOSED),
+        ("PRE", TenderStatus.PLANNED),
+        ("ANUL", TenderStatus.CANCELLED),
+    ],
+)
+def test_parse_placsp_official_status_codes(code: str, expected: TenderStatus) -> None:
+    xml_text = f"""<?xml version="1.0" encoding="UTF-8"?>
+<entry xmlns="http://www.w3.org/2005/Atom"
+       xmlns:cac="urn:dgpe:names:draft:codice:schema:xsd:CommonAggregateComponents-2"
+       xmlns:cbc="urn:dgpe:names:draft:codice:schema:xsd:CommonBasicComponents-2">
+  <id>{code}-id</id>
+  <title>Licitacion {code}</title>
+  <updated>2026-05-17T08:00:00Z</updated>
+  <cac:ContractFolderStatus>
+    <cbc:ContractFolderID>{code}-folder</cbc:ContractFolderID>
+    <cbc:ContractFolderStatusCode>{code}</cbc:ContractFolderStatusCode>
+    <cac:LocatedContractingParty>
+      <cac:Party>
+        <cac:PartyName><cbc:Name>Organo de prueba</cbc:Name></cac:PartyName>
+      </cac:Party>
+    </cac:LocatedContractingParty>
+    <cac:ProcurementProject>
+      <cac:RequiredCommodityClassification>
+        <cbc:ItemClassificationCode>72000000</cbc:ItemClassificationCode>
+      </cac:RequiredCommodityClassification>
+    </cac:ProcurementProject>
+  </cac:ContractFolderStatus>
+</entry>"""
+
+    [tender] = parse_placsp_atom(xml_text)
+
+    assert tender.status == expected
+    assert tender.notice_type == code
+
+
+def test_parse_placsp_human_status_keeps_canonical_notice_type() -> None:
+    xml_text = """<?xml version="1.0" encoding="UTF-8"?>
+<entry xmlns="http://www.w3.org/2005/Atom"
+       xmlns:cac="urn:dgpe:names:draft:codice:schema:xsd:CommonAggregateComponents-2"
+       xmlns:cbc="urn:dgpe:names:draft:codice:schema:xsd:CommonBasicComponents-2">
+  <id>human-status-id</id>
+  <title>Licitacion publicada</title>
+  <updated>2026-05-17T08:00:00Z</updated>
+  <cac:ContractFolderStatus>
+    <cbc:ContractFolderID>human-status-folder</cbc:ContractFolderID>
+    <cbc:ContractFolderStatusCode>Publicada</cbc:ContractFolderStatusCode>
+    <cac:ProcurementProject>
+      <cac:RequiredCommodityClassification>
+        <cbc:ItemClassificationCode>72000000</cbc:ItemClassificationCode>
+      </cac:RequiredCommodityClassification>
+    </cac:ProcurementProject>
+  </cac:ContractFolderStatus>
+</entry>"""
+
+    [tender] = parse_placsp_atom(xml_text)
+
+    assert tender.status == TenderStatus.OPEN
+    assert tender.notice_type == "PUB"
+    assert tender.raw["status_code"] == "Publicada"
+
+
+def test_parse_placsp_summary_uses_source_currency() -> None:
+    xml_text = """<?xml version="1.0" encoding="UTF-8"?>
+<entry xmlns="http://www.w3.org/2005/Atom"
+       xmlns:cac="urn:dgpe:names:draft:codice:schema:xsd:CommonAggregateComponents-2"
+       xmlns:cbc="urn:dgpe:names:draft:codice:schema:xsd:CommonBasicComponents-2">
+  <id>currency-id</id>
+  <title>Licitacion moneda</title>
+  <updated>2026-05-17T08:00:00Z</updated>
+  <cac:ContractFolderStatus>
+    <cbc:ContractFolderID>currency-folder</cbc:ContractFolderID>
+    <cbc:ContractFolderStatusCode>PUB</cbc:ContractFolderStatusCode>
+    <cac:ProcurementProject>
+      <cac:BudgetAmount>
+        <cbc:EstimatedOverallContractAmount currencyID="USD">1000</cbc:EstimatedOverallContractAmount>
+      </cac:BudgetAmount>
+      <cac:RequiredCommodityClassification>
+        <cbc:ItemClassificationCode>72000000</cbc:ItemClassificationCode>
+      </cac:RequiredCommodityClassification>
+    </cac:ProcurementProject>
+  </cac:ContractFolderStatus>
+</entry>"""
+
+    [tender] = parse_placsp_atom(xml_text)
+
+    assert tender.currency == "USD"
+    assert tender.summary is not None
+    assert "Importe: 1000.00 USD" in tender.summary
+
+
+def test_parse_placsp_received_tender_quantity_is_integer() -> None:
+    xml_text = """<?xml version="1.0" encoding="UTF-8"?>
+<entry xmlns="http://www.w3.org/2005/Atom"
+       xmlns:cac="urn:dgpe:names:draft:codice:schema:xsd:CommonAggregateComponents-2"
+       xmlns:cbc="urn:dgpe:names:draft:codice:schema:xsd:CommonBasicComponents-2">
+  <id>quantity-id</id>
+  <title>Licitacion ofertas</title>
+  <updated>2026-05-17T08:00:00Z</updated>
+  <cac:ContractFolderStatus>
+    <cbc:ContractFolderID>quantity-folder</cbc:ContractFolderID>
+    <cbc:ContractFolderStatusCode>ADJ</cbc:ContractFolderStatusCode>
+    <cac:ProcurementProject>
+      <cac:RequiredCommodityClassification>
+        <cbc:ItemClassificationCode>72000000</cbc:ItemClassificationCode>
+      </cac:RequiredCommodityClassification>
+    </cac:ProcurementProject>
+    <cac:TenderResult>
+      <cbc:ReceivedTenderQuantity>12 ofertas</cbc:ReceivedTenderQuantity>
+    </cac:TenderResult>
+  </cac:ContractFolderStatus>
+</entry>"""
+
+    [tender] = parse_placsp_atom(xml_text)
+
+    assert tender.raw["received_tender_quantity"] == 12
 
 
 def test_build_placsp_monthly_url() -> None:

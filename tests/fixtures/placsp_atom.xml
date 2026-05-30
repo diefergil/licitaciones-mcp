@@ -12,7 +12,7 @@
     <link href="https://contrataciondelestado.es/wps/poc?uri=deeplink:detalle_licitacion&amp;idEvl=abc" />
     <cac:ContractFolderStatus>
       <cbc:ContractFolderID>2026/123</cbc:ContractFolderID>
-      <cbc:ContractFolderStatusCode>Publicada</cbc:ContractFolderStatusCode>
+      <cbc:ContractFolderStatusCode>PUB</cbc:ContractFolderStatusCode>
       <cac:LocatedContractingParty>
         <cac:Party>
           <cac:PartyIdentification>
@@ -25,16 +25,24 @@
       </cac:LocatedContractingParty>
       <cac:ProcurementProject>
         <cbc:Name>Mantenimiento solar</cbc:Name>
-        <cbc:EstimatedOverallContractAmount>125.000,50</cbc:EstimatedOverallContractAmount>
+        <cbc:TypeCode>2</cbc:TypeCode>
+        <cac:BudgetAmount>
+          <cbc:EstimatedOverallContractAmount currencyID="EUR">125.000,50</cbc:EstimatedOverallContractAmount>
+        </cac:BudgetAmount>
         <cac:RequiredCommodityClassification>
           <cbc:ItemClassificationCode>09332000</cbc:ItemClassificationCode>
         </cac:RequiredCommodityClassification>
         <cac:RealizedLocation>
           <cbc:CountrySubentity>Comunitat Valenciana</cbc:CountrySubentity>
+          <cbc:CountrySubentityCode>ES523</cbc:CountrySubentityCode>
         </cac:RealizedLocation>
       </cac:ProcurementProject>
       <cac:TenderingProcess>
-        <cbc:EndDate>2026-06-15</cbc:EndDate>
+        <cbc:ProcedureCode>1</cbc:ProcedureCode>
+        <cac:TenderSubmissionDeadlinePeriod>
+          <cbc:EndDate>2026-06-15</cbc:EndDate>
+          <cbc:EndTime>14:00:00</cbc:EndTime>
+        </cac:TenderSubmissionDeadlinePeriod>
       </cac:TenderingProcess>
     </cac:ContractFolderStatus>
   </entry>

@@ -5,6 +5,35 @@ All notable changes to **licitaciones-mcp** will be documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.0] — 2026-05-29
+
+PLACSP ingest and filter-facet release.
+
+### Added
+
+- Public CODICE-derived labels for PLACSP statuses, notice/status codes, contract
+  types, procedure types, dataset kinds, and CPV sectors.
+- `cpv_prefixes` and `dataset_kinds` filters across MCP tools, CLI search,
+  daily jobs, matching input, and Postgres structured filtering.
+- Prefix-aware NUTS filtering in Postgres.
+- `list_filter_options` MCP tool and `filter-options` CLI command for static
+  catalogs plus local facet counts and value/date ranges.
+- Quality issues for unknown source codes, invalid CPV/NUTS values, suspicious
+  amounts/dates, and open tenders without deadlines.
+
+### Changed
+
+- PLACSP parsing now extracts richer budget, deadline, location/NUTS, buyer,
+  winner, award, currency, publication, and source metadata fields.
+- Daily PLACSP Atom ingestion marks rows as the `licitaciones` dataset kind.
+
+### Notes
+
+- This release remains contract/tender focused. Subsidies/BDNS and
+  application-specific business reranking remain outside this repository.
+- Ingestion stores document URLs but does not automatically download or parse
+  tender PDFs.
+
 ## [0.3.2] — 2026-05-29
 
 Production healthcheck hotfix.

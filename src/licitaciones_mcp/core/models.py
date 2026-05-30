@@ -24,6 +24,7 @@ class TenderSource(StrEnum):
 class TenderStatus(StrEnum):
     """Normalized tender lifecycle status."""
 
+    PLANNED = "planned"
     OPEN = "open"
     CLOSED = "closed"
     AWARDED = "awarded"
@@ -129,6 +130,7 @@ class TenderFilters(BaseModel):
 
     text: str | None = None
     cpv_codes: list[str] = Field(default_factory=list)
+    cpv_prefixes: list[str] = Field(default_factory=list)
     nuts_codes: list[str] = Field(default_factory=list)
     regions: list[str] = Field(default_factory=list)
     buyer: str | None = None
@@ -138,6 +140,7 @@ class TenderFilters(BaseModel):
     procedure_types: list[str] = Field(default_factory=list)
     contract_types: list[str] = Field(default_factory=list)
     notice_types: list[str] = Field(default_factory=list)
+    dataset_kinds: list[str] = Field(default_factory=list)
     published_from: date | None = None
     published_to: date | None = None
     deadline_from: date | None = None
@@ -270,13 +273,17 @@ class PublicTender(BaseModel):
     buyer_name: str | None = None
     buyer_tax_id: str | None = None
     status: TenderStatus
+    status_label: str | None = None
     cpv_codes: list[str]
     nuts_codes: list[str]
     region: str | None = None
     country: str
     procedure_type: str | None = None
+    procedure_type_label: str | None = None
     contract_type: str | None = None
+    contract_type_label: str | None = None
     notice_type: str | None = None
+    notice_type_label: str | None = None
     estimated_value: float | None = None
     award_value: float | None = None
     currency: str | None = None
@@ -292,6 +299,13 @@ class PublicTender(BaseModel):
     def from_tender(cls, tender: Tender, *, id_: str | None = None) -> PublicTender:
         """Build a public tender shape from a core tender model."""
 
+        from licitaciones_mcp.core.catalogs import (
+            placsp_contract_type_label,
+            placsp_notice_label,
+            placsp_procedure_type_label,
+            status_label,
+        )
+
         return cls(
             id=id_ or tender.source_id,
             source=tender.source,
@@ -301,13 +315,17 @@ class PublicTender(BaseModel):
             buyer_name=tender.buyer_name,
             buyer_tax_id=tender.buyer_tax_id,
             status=tender.status,
+            status_label=status_label(tender.status),
             cpv_codes=tender.cpv_codes,
             nuts_codes=tender.nuts_codes,
             region=tender.region,
             country=tender.country,
             procedure_type=tender.procedure_type,
+            procedure_type_label=placsp_procedure_type_label(tender.procedure_type),
             contract_type=tender.contract_type,
+            contract_type_label=placsp_contract_type_label(tender.contract_type),
             notice_type=tender.notice_type,
+            notice_type_label=placsp_notice_label(tender.notice_type),
             estimated_value=tender.estimated_value,
             award_value=tender.award_value,
             currency=tender.currency,

@@ -151,11 +151,13 @@ def ingest_file(
 def search(
     text: Annotated[str | None, typer.Argument()] = None,
     cpv: Annotated[list[str] | None, typer.Option("--cpv")] = None,
+    cpv_prefix: Annotated[list[str] | None, typer.Option("--cpv-prefix")] = None,
     nuts: Annotated[list[str] | None, typer.Option("--nuts")] = None,
     region: Annotated[list[str] | None, typer.Option("--region")] = None,
     buyer: Annotated[str | None, typer.Option("--buyer")] = None,
     status: Annotated[list[str] | None, typer.Option("--status")] = None,
     source: Annotated[list[str] | None, typer.Option("--source")] = None,
+    dataset_kind: Annotated[list[str] | None, typer.Option("--dataset-kind")] = None,
     country: Annotated[str | None, typer.Option("--country")] = None,
     only_open: Annotated[bool, typer.Option("--only-open")] = False,
     refresh_sources: Annotated[bool, typer.Option("--refresh-sources")] = False,
@@ -170,11 +172,13 @@ def search(
         result = await service.search_tenders(
             text=text,
             cpv_codes=cpv,
+            cpv_prefixes=cpv_prefix,
             nuts_codes=nuts,
             regions=region,
             buyer=buyer,
             statuses=status,
             sources=source,
+            dataset_kinds=dataset_kind,
             country=country,
             only_open=only_open,
             refresh_sources=refresh_sources,
@@ -182,6 +186,41 @@ def search(
         )
         await database.close()
         _print_results(result["results"])
+
+    asyncio.run(_run())
+
+
+@app.command("filter-options")
+def filter_options(
+    text: Annotated[str | None, typer.Option("--text")] = None,
+    cpv: Annotated[list[str] | None, typer.Option("--cpv")] = None,
+    cpv_prefix: Annotated[list[str] | None, typer.Option("--cpv-prefix")] = None,
+    nuts: Annotated[list[str] | None, typer.Option("--nuts")] = None,
+    region: Annotated[list[str] | None, typer.Option("--region")] = None,
+    status: Annotated[list[str] | None, typer.Option("--status")] = None,
+    dataset_kind: Annotated[list[str] | None, typer.Option("--dataset-kind")] = None,
+    only_open: Annotated[bool, typer.Option("--only-open")] = False,
+    limit: Annotated[int, typer.Option("--limit")] = 50,
+) -> None:
+    """Show static catalogs and local facet counts for available filters."""
+
+    async def _run() -> None:
+        settings = get_settings()
+        database = TenderDatabase(settings.database_url)
+        service = TenderToolService(settings, database)
+        result = await service.list_filter_options(
+            text=text,
+            cpv_codes=cpv,
+            cpv_prefixes=cpv_prefix,
+            nuts_codes=nuts,
+            regions=region,
+            statuses=status,
+            dataset_kinds=dataset_kind,
+            only_open=only_open,
+            limit=limit,
+        )
+        await database.close()
+        console.print_json(data=result)
 
     asyncio.run(_run())
 
@@ -308,10 +347,13 @@ def create_job(
     name: Annotated[str, typer.Option("--name")],
     text: Annotated[str | None, typer.Option("--text")] = None,
     cpv: Annotated[list[str] | None, typer.Option("--cpv")] = None,
+    cpv_prefix: Annotated[list[str] | None, typer.Option("--cpv-prefix")] = None,
+    nuts: Annotated[list[str] | None, typer.Option("--nuts")] = None,
     region: Annotated[list[str] | None, typer.Option("--region")] = None,
     buyer: Annotated[str | None, typer.Option("--buyer")] = None,
     status: Annotated[list[str] | None, typer.Option("--status")] = None,
     source: Annotated[list[str] | None, typer.Option("--source")] = None,
+    dataset_kind: Annotated[list[str] | None, typer.Option("--dataset-kind")] = None,
     hour_utc: Annotated[int, typer.Option("--hour-utc", min=0, max=23)] = 7,
     only_open: Annotated[bool, typer.Option("--only-open/--all-statuses")] = True,
     limit: Annotated[int, typer.Option("--limit")] = 50,
@@ -326,10 +368,13 @@ def create_job(
             name=name,
             text=text,
             cpv_codes=cpv,
+            cpv_prefixes=cpv_prefix,
+            nuts_codes=nuts,
             regions=region,
             buyer=buyer,
             statuses=status,
             sources=source,
+            dataset_kinds=dataset_kind,
             only_open=only_open,
             hour_utc=hour_utc,
             limit=limit,

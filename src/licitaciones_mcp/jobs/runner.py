@@ -99,6 +99,7 @@ class SourceIngestor:
             run = await self.database.start_source_fetch_run(
                 source="placsp",
                 operation="feed",
+                dataset_kind=PLACSPDatasetKind.LICITACIONES.value,
                 source_url=self.settings.placsp_feed_url,
                 filters=filters.model_dump(mode="json"),
             )

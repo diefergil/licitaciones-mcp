@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+from collections import Counter
+from collections.abc import Mapping, Sequence
 from datetime import UTC, datetime
 from typing import Any
 
-from sqlalchemy import String, bindparam, delete, literal_column, or_, select, text
+from sqlalchemy import String, bindparam, delete, func, literal_column, or_, select, text
 from sqlalchemy.dialects.postgresql import ARRAY
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import (
@@ -16,9 +18,25 @@ from sqlalchemy.ext.asyncio import (
     create_async_engine,
 )
 from sqlalchemy.orm import selectinload
+from sqlalchemy.sql import Select
 from sqlalchemy.sql.elements import TextClause
 
 from licitaciones_mcp.config import SearchBackend, Settings, get_settings
+from licitaciones_mcp.core.catalogs import (
+    CPV_SECTORS,
+    PLACSP_CONTRACT_TYPES,
+    PLACSP_DATASET_KINDS,
+    PLACSP_NOTICE_STATUS,
+    PLACSP_NOTICE_TYPES,
+    PLACSP_PROCEDURE_TYPES,
+    cpv_sector_label,
+    dataset_kind_label,
+    placsp_contract_type_label,
+    placsp_notice_label,
+    placsp_procedure_type_label,
+    source_label,
+    status_label,
+)
 from licitaciones_mcp.core.dedupe import attach_dedupe_key
 from licitaciones_mcp.core.models import (
     MAX_TENDER_SEARCH_LIMIT,
@@ -35,7 +53,13 @@ from licitaciones_mcp.core.models import (
     TenderSource,
     TenderStatus,
 )
-from licitaciones_mcp.core.normalization import fold_text, normalize_cpv_codes
+from licitaciones_mcp.core.normalization import (
+    fold_text,
+    normalize_cpv_codes,
+    normalize_cpv_prefixes,
+    normalize_status,
+    normalize_text,
+)
 from licitaciones_mcp.core.quality import validate_tender
 from licitaciones_mcp.core.scoring import rank_tenders, tender_matches_filters
 from licitaciones_mcp.storage.models import (
@@ -54,6 +78,7 @@ from licitaciones_mcp.storage.models import (
 _SEARCH_CANDIDATE_MIN = 200
 _SEARCH_CANDIDATE_MULTIPLIER = 20
 _SEARCH_CANDIDATE_MAX = 5_000
+_FACET_ROW_WINDOW = 5_000
 _SEARCH_VECTOR_EXPR = (
     "to_tsvector('spanish', "
     "coalesce(title, '') || ' ' || "
@@ -61,6 +86,7 @@ _SEARCH_VECTOR_EXPR = (
     "coalesce(buyer_name, ''))"
 )
 _BM25_TENDERS_INDEX = "idx_tenders_bm25_text"
+_JSON_ARRAY_PREFIX_COLUMNS = {"cpv_codes", "nuts_codes"}
 _BM25_TEXT_EXPR = (
     "coalesce(title, '') || ' ' || coalesce(summary, '') || ' ' || coalesce(buyer_name, '')"
 )
@@ -671,10 +697,18 @@ class TenderDatabase:
                     )
                 )
             )
-        if filters.nuts_codes:
+        cpv_prefixes = normalize_cpv_prefixes(filters.cpv_prefixes)
+        if cpv_prefixes:
             statement = statement.where(
-                text("nuts_codes::jsonb ?| :__nuts_codes").bindparams(
-                    bindparam("__nuts_codes", value=filters.nuts_codes, type_=ARRAY(String()))
+                _json_array_prefix_clause("cpv_codes", "__cpv_prefix", cpv_prefixes)
+            )
+        nuts_prefixes = _sanitize_sql_prefixes(filters.nuts_codes)
+        if nuts_prefixes:
+            statement = statement.where(
+                _json_array_prefix_clause(
+                    "nuts_codes",
+                    "__nuts_prefix",
+                    nuts_prefixes,
                 )
             )
         if filters.regions:
@@ -682,32 +716,37 @@ class TenderDatabase:
                 or_(*[TenderRecord.region.ilike(f"%{region}%") for region in filters.regions])
             )
         if filters.procedure_types:
-            statement = statement.where(
-                or_(
-                    *[
-                        TenderRecord.procedure_type.ilike(f"%{procedure_type}%")
-                        for procedure_type in filters.procedure_types
-                    ]
+            values = _normalized_exact_filter_values(filters.procedure_types)
+            if values:
+                statement = statement.where(
+                    func.lower(func.btrim(TenderRecord.procedure_type)).in_(values)
                 )
-            )
         if filters.contract_types:
-            statement = statement.where(
-                or_(
-                    *[
-                        TenderRecord.contract_type.ilike(f"%{contract_type}%")
-                        for contract_type in filters.contract_types
-                    ]
+            values = _normalized_exact_filter_values(filters.contract_types)
+            if values:
+                statement = statement.where(
+                    func.lower(func.btrim(TenderRecord.contract_type)).in_(values)
                 )
-            )
         if filters.notice_types:
-            statement = statement.where(
-                or_(
-                    *[
-                        TenderRecord.notice_type.ilike(f"%{notice_type}%")
-                        for notice_type in filters.notice_types
-                    ]
+            values = _normalized_exact_filter_values(filters.notice_types)
+            if values:
+                statement = statement.where(
+                    func.lower(func.btrim(TenderRecord.notice_type)).in_(values)
                 )
-            )
+        if filters.dataset_kinds:
+            values = _normalized_exact_filter_values(filters.dataset_kinds)
+            if values:
+                statement = statement.where(
+                    text(
+                        "lower(btrim(source_metadata ->> 'dataset_kind')) = ANY(:__dataset_kinds)"
+                    ).bindparams(
+                        bindparam(
+                            "__dataset_kinds",
+                            value=values,
+                            type_=ARRAY(String()),
+                        )
+                    )
+                )
         return statement
 
     @staticmethod
@@ -791,6 +830,46 @@ class TenderDatabase:
                 : max(1, min(limit, 100))
             ]
         ]
+
+    async def list_filter_options(
+        self,
+        filters: TenderFilters | None = None,
+        *,
+        limit: int = 50,
+    ) -> dict[str, Any]:
+        """Return static catalogs and local facet counts for tender filters."""
+
+        active_filters = filters or TenderFilters(limit=MAX_TENDER_SEARCH_LIMIT)
+        facet_limit = max(1, min(limit, 200))
+        row_window = _FACET_ROW_WINDOW
+        async with self.session_factory() as session:
+            statement = self._apply_structured_filters(
+                _facet_select_statement(),
+                active_filters,
+            )
+            if active_filters.text:
+                if self.search_backend == "bm25" and await _bm25_available(session):
+                    statement = statement.where(_bm25_match_clause(active_filters.text))
+                else:
+                    statement = self._apply_text_filter(statement, active_filters.text)
+            statement = statement.order_by(TenderRecord.published_at.desc().nullslast()).limit(
+                row_window + 1
+            )
+            fetched_rows: list[dict[str, Any]] = [
+                dict(row) for row in (await session.execute(statement)).mappings().all()
+            ]
+            truncated = len(fetched_rows) > row_window
+            rows = fetched_rows[:row_window]
+
+        return {
+            "count": len(rows),
+            "facet_row_window": row_window,
+            "truncated": truncated,
+            "filters": active_filters.model_dump(mode="json"),
+            "catalogs": _static_filter_catalogs(),
+            "facets": _facet_counts(rows, limit=facet_limit),
+            "ranges": _facet_ranges(rows),
+        }
 
     async def create_daily_job(self, job: DailyJob) -> DailyJob:
         """Create or replace a named daily job."""
@@ -957,8 +1036,9 @@ class TenderDatabase:
         )
 
     async def _upsert_tender(self, session: AsyncSession, tender: Tender) -> str:
-        if not tender.quality_issues:
-            tender.quality_issues = validate_tender(tender)
+        tender.quality_issues = _merge_quality_issues(
+            tender.quality_issues, validate_tender(tender)
+        )
         document_records = [_document_to_record(document) for document in tender.documents]
         existing = (
             (
@@ -993,6 +1073,216 @@ def _tender_identifier_clause(identifier: str) -> Any:
         | (TenderRecord.external_id == identifier)
         | (TenderRecord.dedupe_key == identifier)
     )
+
+
+def _merge_quality_issues(
+    existing: list[TenderQualityIssue],
+    generated: list[TenderQualityIssue],
+) -> list[TenderQualityIssue]:
+    """Merge parser and deterministic quality issues without duplicating code/field pairs."""
+
+    merged = list(existing)
+    seen = {(issue.code, issue.field) for issue in merged}
+    for issue in generated:
+        key = (issue.code, issue.field)
+        if key not in seen:
+            merged.append(issue)
+            seen.add(key)
+    return merged
+
+
+def _static_filter_catalogs() -> dict[str, Any]:
+    """Return versioned static catalogs for clients building filter UIs."""
+
+    return {
+        "statuses": [
+            {"value": status.value, "label": status_label(status)} for status in TenderStatus
+        ],
+        "notice_types": [
+            {
+                "value": value,
+                "label": label,
+                "status": PLACSP_NOTICE_STATUS.get(value, TenderStatus.UNKNOWN).value,
+            }
+            for value, label in PLACSP_NOTICE_TYPES.items()
+        ],
+        "contract_types": [
+            {"value": value, "label": label} for value, label in PLACSP_CONTRACT_TYPES.items()
+        ],
+        "procedure_types": [
+            {"value": value, "label": label} for value, label in PLACSP_PROCEDURE_TYPES.items()
+        ],
+        "dataset_kinds": [
+            {"value": value, "label": label} for value, label in PLACSP_DATASET_KINDS.items()
+        ],
+        "sources": [
+            {"value": source.value, "label": source_label(source)} for source in TenderSource
+        ],
+        "cpv_sectors": [
+            {"value": value, "label": label} for value, label in sorted(CPV_SECTORS.items())
+        ],
+    }
+
+
+def _facet_select_statement() -> Select[tuple[Any, ...]]:
+    """Return the narrow row shape needed to compute local filter facets."""
+
+    return select(
+        TenderRecord.status.label("status"),
+        TenderRecord.source.label("source"),
+        TenderRecord.notice_type.label("notice_type"),
+        TenderRecord.contract_type.label("contract_type"),
+        TenderRecord.procedure_type.label("procedure_type"),
+        TenderRecord.cpv_codes.label("cpv_codes"),
+        TenderRecord.nuts_codes.label("nuts_codes"),
+        TenderRecord.region.label("region"),
+        TenderRecord.buyer_name.label("buyer_name"),
+        TenderRecord.estimated_value.label("estimated_value"),
+        TenderRecord.published_at.label("published_at"),
+        TenderRecord.deadline_at.label("deadline_at"),
+        literal_column("source_metadata ->> 'dataset_kind'").label("dataset_kind"),
+    )
+
+
+def _facet_counts(
+    rows: Sequence[Mapping[str, Any]], *, limit: int
+) -> dict[str, list[dict[str, Any]]]:
+    status_counts: Counter[str] = Counter()
+    notice_counts: Counter[str] = Counter()
+    contract_counts: Counter[str] = Counter()
+    procedure_counts: Counter[str] = Counter()
+    cpv_counts: Counter[str] = Counter()
+    cpv_prefix_counts: Counter[str] = Counter()
+    nuts_counts: Counter[str] = Counter()
+    region_counts: Counter[str] = Counter()
+    buyer_counts: Counter[str] = Counter()
+    dataset_counts: Counter[str] = Counter()
+    source_counts: Counter[str] = Counter()
+
+    for row in rows:
+        status_counts[_normalized_status_value(row["status"]).value] += 1
+        source = normalize_text(str(row["source"]))
+        if source:
+            source_counts[source] += 1
+        notice_type = _normalized_notice_facet_value(row["notice_type"])
+        if notice_type:
+            notice_counts[notice_type] += 1
+        contract_type = _normalized_facet_value(row["contract_type"])
+        if contract_type:
+            contract_counts[contract_type] += 1
+        procedure_type = _normalized_facet_value(row["procedure_type"])
+        if procedure_type:
+            procedure_counts[procedure_type] += 1
+        for cpv in row["cpv_codes"] or []:
+            cpv_counts[cpv] += 1
+            if len(cpv) >= 2:
+                cpv_prefix_counts[cpv[:2]] += 1
+        for nuts in row["nuts_codes"] or []:
+            normalized_nuts = _normalized_nuts_value(nuts)
+            if normalized_nuts:
+                nuts_counts[normalized_nuts] += 1
+        region = normalize_text(row["region"])
+        if region:
+            region_counts[region] += 1
+        buyer_name = normalize_text(row["buyer_name"])
+        if buyer_name:
+            buyer_counts[buyer_name] += 1
+        dataset_kind = row["dataset_kind"]
+        normalized_dataset_kind = normalize_text(str(dataset_kind)) if dataset_kind else None
+        if normalized_dataset_kind:
+            dataset_counts[normalized_dataset_kind.lower()] += 1
+
+    return {
+        "statuses": [
+            {"value": value, "label": status_label(TenderStatus(value)), "count": count}
+            for value, count in _top_counter(status_counts, limit)
+        ],
+        "notice_types": [
+            {"value": value, "label": placsp_notice_label(value), "count": count}
+            for value, count in _top_counter(notice_counts, limit)
+        ],
+        "contract_types": [
+            {"value": value, "label": placsp_contract_type_label(value), "count": count}
+            for value, count in _top_counter(contract_counts, limit)
+        ],
+        "procedure_types": [
+            {"value": value, "label": placsp_procedure_type_label(value), "count": count}
+            for value, count in _top_counter(procedure_counts, limit)
+        ],
+        "cpv_codes": [
+            {"value": value, "count": count} for value, count in _top_counter(cpv_counts, limit)
+        ],
+        "cpv_prefixes": [
+            {"value": value, "label": cpv_sector_label(value), "count": count}
+            for value, count in _top_counter(cpv_prefix_counts, limit)
+        ],
+        "nuts_codes": [
+            {"value": value, "count": count} for value, count in _top_counter(nuts_counts, limit)
+        ],
+        "regions": [
+            {"value": value, "count": count} for value, count in _top_counter(region_counts, limit)
+        ],
+        "buyers": [
+            {"value": value, "count": count} for value, count in _top_counter(buyer_counts, limit)
+        ],
+        "dataset_kinds": [
+            {"value": value, "label": dataset_kind_label(value), "count": count}
+            for value, count in _top_counter(dataset_counts, limit)
+        ],
+        "sources": [
+            {"value": value, "label": value.upper(), "count": count}
+            for value, count in _top_counter(source_counts, limit)
+        ],
+    }
+
+
+def _normalized_status_value(value: Any) -> TenderStatus:
+    """Return a resilient normalized status for facet labels."""
+
+    normalized = normalize_text(str(value)) if value is not None else None
+    if not normalized:
+        return TenderStatus.UNKNOWN
+    try:
+        return TenderStatus(normalized.lower())
+    except ValueError:
+        return normalize_status(normalized)
+
+
+def _normalized_notice_facet_value(value: Any) -> str | None:
+    """Return canonical PLACSP notice codes without uppercasing non-catalog labels."""
+
+    normalized = _normalized_facet_value(value)
+    if not normalized:
+        return None
+    code = normalized.upper()
+    return code if code in PLACSP_NOTICE_TYPES else normalized
+
+
+def _facet_ranges(rows: Sequence[Mapping[str, Any]]) -> dict[str, dict[str, Any]]:
+    values = [row["estimated_value"] for row in rows if row["estimated_value"] is not None]
+    published = [row["published_at"] for row in rows if row["published_at"] is not None]
+    deadlines = [row["deadline_at"] for row in rows if row["deadline_at"] is not None]
+    return {
+        "estimated_value": _numeric_range(values),
+        "published_at": _datetime_range(published),
+        "deadline_at": _datetime_range(deadlines),
+    }
+
+
+def _top_counter(counter: Counter[str], limit: int) -> list[tuple[str, int]]:
+    return sorted(counter.items(), key=lambda item: (-item[1], item[0]))[:limit]
+
+
+def _numeric_range(values: list[float]) -> dict[str, float | None]:
+    if not values:
+        return {"min": None, "max": None}
+    return {"min": min(values), "max": max(values)}
+
+
+def _datetime_range(values: list[datetime]) -> dict[str, str | None]:
+    if not values:
+        return {"min": None, "max": None}
+    return {"min": min(values).isoformat(), "max": max(values).isoformat()}
 
 
 async def _ensure_postgres_search_features(
@@ -1171,7 +1461,19 @@ def _document_to_record(document: TenderDocument) -> TenderDocumentRecord:
     )
 
 
-def _record_to_tender(record: TenderRecord) -> Tender:
+def _record_to_tender(record: TenderRecord, *, include_documents: bool = True) -> Tender:
+    documents: list[TenderDocument] = []
+    if include_documents:
+        documents = [
+            TenderDocument(
+                url=document.url,
+                title=document.title,
+                document_type=document.document_type,
+                published_at=document.published_at,
+                metadata=document.extra_metadata,
+            )
+            for document in record.documents
+        ]
     return Tender(
         id=record.id,
         source=TenderSource(record.source),
@@ -1197,16 +1499,7 @@ def _record_to_tender(record: TenderRecord) -> Tender:
         winner_name=record.winner_name,
         winner_tax_id=record.winner_tax_id,
         url=record.url,
-        documents=[
-            TenderDocument(
-                url=document.url,
-                title=document.title,
-                document_type=document.document_type,
-                published_at=document.published_at,
-                metadata=document.extra_metadata,
-            )
-            for document in record.documents
-        ],
+        documents=documents,
         raw=dict(record.raw or {}),
         source_metadata=dict(record.source_metadata or {}),
         quality_issues=[
@@ -1266,6 +1559,60 @@ def _source_fetch_run_status_value(status: SourceFetchRunStatus | str) -> str:
         return SourceFetchRunStatus(str(status).lower()).value
     except ValueError as exc:
         raise ValueError(f"Invalid source fetch run status: {status}") from exc
+
+
+def _json_array_prefix_clause(
+    column: str, parameter_prefix: str, prefixes: list[str]
+) -> TextClause:
+    """Return a jsonb array text prefix predicate for CPV/NUTS filters."""
+
+    if column not in _JSON_ARRAY_PREFIX_COLUMNS:
+        raise ValueError(f"Unsupported JSON array prefix column: {column}")
+    clean_prefixes = _sanitize_sql_prefixes(prefixes)
+    if not clean_prefixes:
+        return text("true")
+    predicates = []
+    bind_values: dict[str, str] = {}
+    for index, prefix in enumerate(clean_prefixes):
+        name = f"{parameter_prefix}_{index}"
+        predicates.append(f"UPPER(value) LIKE :{name}")
+        bind_values[name] = f"{prefix}%"
+    sql = (
+        f"EXISTS (SELECT 1 FROM jsonb_array_elements_text({column}::jsonb) AS item(value) "  # nosec B608
+        f"WHERE {' OR '.join(predicates)})"
+    )
+    return text(sql).bindparams(**bind_values)
+
+
+def _sanitize_sql_prefixes(prefixes: list[str]) -> list[str]:
+    """Return uppercase ASCII-alphanumeric prefixes safe for SQL LIKE matching."""
+
+    cleaned: list[str] = []
+    seen: set[str] = set()
+    for prefix in prefixes:
+        normalized = "".join(
+            char for char in str(prefix).upper().strip() if char.isascii() and char.isalnum()
+        )
+        if normalized and normalized not in seen:
+            cleaned.append(normalized)
+            seen.add(normalized)
+    return cleaned
+
+
+def _normalized_exact_filter_values(values: list[str]) -> list[str]:
+    return [normalized.lower() for value in values if (normalized := normalize_text(str(value)))]
+
+
+def _normalized_facet_value(value: str | None, *, uppercase: bool = False) -> str | None:
+    normalized = normalize_text(value)
+    if normalized is None:
+        return None
+    return normalized.upper() if uppercase else normalized
+
+
+def _normalized_nuts_value(value: str) -> str | None:
+    values = _sanitize_sql_prefixes([value])
+    return values[0] if values else None
 
 
 def _search_candidate_limit(filters: TenderFilters) -> int:

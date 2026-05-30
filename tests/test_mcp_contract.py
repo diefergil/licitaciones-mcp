@@ -18,6 +18,7 @@ async def test_mcp_builds_with_expected_tools() -> None:
 
     assert {
         "search_tenders",
+        "list_filter_options",
         "get_tender",
         "get_recent_tenders",
         "search_buyers",
@@ -40,6 +41,11 @@ async def test_mcp_builds_with_expected_tools() -> None:
     properties = search_schema["properties"]
     assert "text" in properties
     assert "cpv_codes" in properties
+    assert "cpv_prefixes" in properties
+    assert "dataset_kinds" in properties
     assert "country" in properties
     assert "query" not in properties
     assert "query_mode" in properties
+
+    create_job_schema = next(tool.inputSchema for tool in tools if tool.name == "create_daily_job")
+    assert "nuts_codes" in create_job_schema["properties"]

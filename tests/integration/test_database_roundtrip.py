@@ -5,6 +5,7 @@ from __future__ import annotations
 from datetime import UTC, datetime
 
 import pytest
+from sqlalchemy import text
 
 from licitaciones_mcp.core.models import (
     SourceFetchRunStatus,
@@ -12,6 +13,7 @@ from licitaciones_mcp.core.models import (
     TenderDocument,
     TenderFilters,
     TenderSource,
+    TenderStatus,
 )
 from licitaciones_mcp.storage.database import TenderDatabase
 
@@ -65,6 +67,155 @@ async def test_search_applies_country_filter(database: TenderDatabase) -> None:
     results = await database.search_tenders(TenderFilters(country="FR", limit=10))
 
     assert [result.tender.external_id for result in results] == ["country-fr"]
+
+
+async def test_search_applies_prefix_filters_and_facets(database: TenderDatabase) -> None:
+    """CPV/NUTS prefixes and dataset kind filters should be enforced in Postgres."""
+
+    tic_madrid = await _make_tender("filters-tic-madrid", "Servicios TIC Madrid")
+    tic_madrid.status = TenderStatus.OPEN
+    tic_madrid.cpv_codes = ["72000000"]
+    tic_madrid.nuts_codes = ["es300"]
+    tic_madrid.region = "Comunidad de Madrid"
+    tic_madrid.notice_type = " pub "
+    tic_madrid.contract_type = " 2 "
+    tic_madrid.procedure_type = " 1 "
+    tic_madrid.source_metadata = {"dataset_kind": "licitaciones"}
+
+    obras_valencia = await _make_tender("filters-obras-valencia", "Obras Valencia")
+    obras_valencia.status = TenderStatus.CLOSED
+    obras_valencia.cpv_codes = ["45000000"]
+    obras_valencia.nuts_codes = ["ES523"]
+    obras_valencia.region = "Comunitat Valenciana"
+    obras_valencia.notice_type = "RES"
+    obras_valencia.contract_type = "21"
+    obras_valencia.procedure_type = "100"
+    obras_valencia.source_metadata = {"dataset_kind": " MENORES "}
+
+    await database.upsert_tenders([tic_madrid, obras_valencia])
+
+    results = await database.search_tenders(
+        TenderFilters(
+            cpv_prefixes=["72"],
+            nuts_codes=["ES3"],
+            dataset_kinds=["licitaciones"],
+            only_open=True,
+            limit=10,
+        )
+    )
+    assert [result.tender.external_id for result in results] == ["filters-tic-madrid"]
+
+    mixed_nuts_results = await database.search_tenders(
+        TenderFilters(nuts_codes=["", " ES3 "], limit=10)
+    )
+    assert [result.tender.external_id for result in mixed_nuts_results] == ["filters-tic-madrid"]
+
+    blank_nuts_results = await database.search_tenders(TenderFilters(nuts_codes=[""], limit=10))
+    assert {result.tender.external_id for result in blank_nuts_results} == {
+        "filters-tic-madrid",
+        "filters-obras-valencia",
+    }
+
+    invalid_prefix_results = await database.search_tenders(
+        TenderFilters(nuts_codes=["*"], limit=10)
+    )
+    assert {result.tender.external_id for result in invalid_prefix_results} == {
+        "filters-tic-madrid",
+        "filters-obras-valencia",
+    }
+
+    exact_code_results = await database.search_tenders(
+        TenderFilters(procedure_types=["1"], contract_types=["2"], notice_types=["PUB"], limit=10)
+    )
+    assert [result.tender.external_id for result in exact_code_results] == ["filters-tic-madrid"]
+
+    dataset_kind_results = await database.search_tenders(
+        TenderFilters(dataset_kinds=[" menores "], limit=10)
+    )
+    assert [result.tender.external_id for result in dataset_kind_results] == [
+        "filters-obras-valencia"
+    ]
+
+    facets = await database.list_filter_options(TenderFilters(cpv_prefixes=["72"]), limit=10)
+
+    assert facets["count"] == 1
+    assert facets["facet_row_window"] == 5000
+    assert facets["truncated"] is False
+    assert facets["ranges"]["deadline_at"]["min"] is not None
+    assert facets["facets"]["statuses"] == [{"value": "open", "label": "Abierta", "count": 1}]
+    assert facets["facets"]["notice_types"] == [{"value": "PUB", "label": "En plazo", "count": 1}]
+    assert facets["facets"]["contract_types"] == [{"value": "2", "label": "Servicios", "count": 1}]
+    assert facets["facets"]["procedure_types"] == [{"value": "1", "label": "Abierto", "count": 1}]
+    assert facets["facets"]["cpv_prefixes"] == [
+        {
+            "value": "72",
+            "label": "Servicios TI: consultoría, software, internet y apoyo",
+            "count": 1,
+        }
+    ]
+    assert facets["facets"]["dataset_kinds"] == [
+        {"value": "licitaciones", "label": "Licitaciones sin menores", "count": 1}
+    ]
+
+    all_facets = await database.list_filter_options(TenderFilters(), limit=10)
+    assert all_facets["facets"]["nuts_codes"] == [
+        {"value": "ES300", "count": 1},
+        {"value": "ES523", "count": 1},
+    ]
+    assert all_facets["facets"]["dataset_kinds"] == [
+        {"value": "licitaciones", "label": "Licitaciones sin menores", "count": 1},
+        {"value": "menores", "label": "Contratos menores", "count": 1},
+    ]
+
+
+async def test_filter_options_tolerates_noncanonical_source_status_values(
+    database: TenderDatabase,
+) -> None:
+    """Status facets should not fail on source-specific stored strings."""
+
+    open_tender = await _make_tender("source-open-status", "Source open status")
+    unknown_tender = await _make_tender("source-unknown-status", "Source unknown status")
+    await database.upsert_tenders([open_tender, unknown_tender])
+
+    async with database.session_factory() as session:
+        await session.execute(
+            text(
+                "UPDATE tenders SET status = :status, notice_type = :notice_type "
+                "WHERE external_id = :external_id AND source = :source"
+            ),
+            {
+                "status": "OPEN",
+                "notice_type": "Publicada",
+                "external_id": "source-open-status",
+                "source": TenderSource.PLACSP.value,
+            },
+        )
+        await session.execute(
+            text(
+                "UPDATE tenders SET status = :status "
+                "WHERE external_id = :external_id AND source = :source"
+            ),
+            {
+                "status": "Estado no catalogado",
+                "external_id": "source-unknown-status",
+                "source": TenderSource.PLACSP.value,
+            },
+        )
+        await session.commit()
+
+    facets = await database.list_filter_options(TenderFilters(), limit=10)
+
+    assert {"value": "open", "label": "Abierta", "count": 1} in facets["facets"]["statuses"]
+    assert {
+        "value": "unknown",
+        "label": "Desconocida",
+        "count": 1,
+    } in facets["facets"]["statuses"]
+    assert {
+        "value": "Publicada",
+        "label": "Publicada",
+        "count": 1,
+    } in facets["facets"]["notice_types"]
 
 
 async def test_upsert_embeddings_rejects_mixed_dimensions(database: TenderDatabase) -> None:
